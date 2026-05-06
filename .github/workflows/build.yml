@@ -1,0 +1,119 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ v* ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov black flake8 mypy
+    
+    - name: Code formatting check
+      run: black --check src/ tests/
+      continue-on-error: true
+    
+    - name: Lint with flake8
+      run: flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+      continue-on-error: true
+    
+    - name: Type checking
+      run: mypy src/
+      continue-on-error: true
+    
+    - name: Run tests
+      run: pytest tests/ -v --cov=src --cov-report=xml
+      continue-on-error: true
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        fail_ci_if_error: false
+
+  build:
+    name: Build Executable
+    runs-on: windows-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller pyinstaller-hooks-contrib
+    
+    - name: Build executable
+      run: python build.py
+    
+    - name: List build artifacts
+      run: |
+        ls -la dist/
+        ls -la dist/BOT360/
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: bot360-windows
+        path: |
+          dist/BOT360_portable/
+          dist/BOT360-v*.zip
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: |
+          dist/BOT360_portable/**
+          dist/BOT360-v*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-notes:
+    name: Generate Release Notes
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Extract release notes
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+    
+    - name: Create release notes
+      run: |
+        echo "🤖 BOT360 Release ${{ env.VERSION }}" > RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "See [CHANGELOG.md](CHANGELOG.md) for full details." >> RELEASE_NOTES.md
+        cat RELEASE_NOTES.md

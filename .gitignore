@@ -1,0 +1,99 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+*.exe
+*.ico
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+
+# Logs
+logs/
+*.log
+*.log.*
+debug_visor.txt
+resumen_ejecucion.txt
+structure_scan.txt
+
+# Downloads
+downloads/browser/*
+downloads/hc/*
+downloads/runtime/*
+!downloads/runtime/job_configs/.gitkeep
+
+# Config (sensitive data)
+config/config.json
+config/credentials.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Local development
+*.sqlite
+*.db
+*.sqlite3
+
+build_work/
+dist.zip
+dist/
+*.pkg
+*.pyz

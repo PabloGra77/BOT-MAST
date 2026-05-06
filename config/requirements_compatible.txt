@@ -1,0 +1,8 @@
+flask
+selenium
+webdriver-manager
+pandas
+openpyxl
+requests
+pymupdf
+urllib3
