@@ -114,6 +114,12 @@ class Bot:
         self.turbo_mode = True # MODO VELOCIDAD ACTIVADO POR DEFECTO
         self.browser_name = str(browser_name or "chrome").lower().strip()
         self.credential_override = credential_override or {}
+        # --- Contador de descargas para reinicio preventivo de sesión ---
+        self._descargas_en_sesion = 0
+        self.MAX_DESCARGAS_POR_SESION = 50
+        # Tamaño mínimo válido (en bytes) para considerar un PDF "no vacío"
+        self.PDF_MIN_BYTES = 5 * 1024  # 5 KB
+        self.PDF_MIN_TEXTO = 80         # caracteres mínimos extraíbles
 
     def log(self, message):
         """Imprime mensaje en consola y llama al callback si existe."""
@@ -1543,14 +1549,39 @@ class Bot:
         nombre = " ".join("".join(permitido).strip().split()).upper()
         return (nombre or "GEN")[:60]
 
-    def _mover_a_subcarpeta(self, ruta_archivo, cedula, tipo_atencion, servicio, numero_factura=None):
+    def _mover_a_subcarpeta(self, ruta_archivo, cedula, tipo_atencion, servicio, numero_factura=None,
+                             fecha_inicio=None, fecha_fin=None):
         """
         Organiza descargas por servicio:
         Downloads/HC_MASIVA_xxx/<SERVICIO>/<CC_SIGLA[_FACTURA]>.pdf
+
+        Antes de mover, valida que el PDF:
+          - No esté vacío (peso + texto)
+          - Mencione el servicio esperado
+          - Su fecha esté en el rango pedido
+        Si falla la validación, elimina el PDF y devuelve None.
         """
         try:
             if not os.path.exists(ruta_archivo):
                 return ruta_archivo
+
+            # --- VALIDACIÓN PREVIA AL MOVIMIENTO ---
+            try:
+                ok, motivo = self.validar_pdf_descargado(
+                    ruta_archivo,
+                    servicio_esperado=servicio,
+                    fecha_inicio=fecha_inicio,
+                    fecha_fin=fecha_fin,
+                )
+                if not ok:
+                    self.log(f"[VALIDACION] PDF rechazado para CC={cedula}: {motivo}")
+                    try:
+                        os.remove(ruta_archivo)
+                    except Exception:
+                        pass
+                    return None
+            except Exception as e:
+                self.log(f"[WARN] Error en validación previa de PDF: {e} — se continúa con el movimiento")
 
             cc = str(cedula).strip()
             cod_servicio = self._codigo_servicio_por_contexto(servicio, tipo_atencion)
@@ -1581,10 +1612,142 @@ class Bot:
             # Mover archivo
             shutil.move(ruta_archivo, nueva_ruta)
             self.log(f"[EXITO] Archivo organizado en: {nueva_ruta}")
+            # Contabilizar y reiniciar navegador cada N descargas para evitar caducidad
+            self._registrar_descarga_y_chequear_reinicio()
             return nueva_ruta
         except Exception as e:
             self.log(f"[WARN] No se pudo mover el archivo a la subcarpeta: {e}")
             return ruta_archivo
+
+    def _extraer_texto_pdf(self, ruta_pdf, max_paginas=2):
+        """Extrae texto en mayúsculas de las primeras N páginas. '' si falla."""
+        try:
+            doc = fitz.open(ruta_pdf)
+            partes = []
+            for i in range(min(max_paginas, len(doc))):
+                try:
+                    partes.append(doc[i].get_text() or "")
+                except Exception:
+                    pass
+            doc.close()
+            return normalize_text(" ".join(partes))
+        except Exception as e:
+            self.log(f"[WARN] No se pudo leer PDF: {e}")
+            return ""
+
+    def _validar_pdf_no_vacio(self, ruta_pdf):
+        """(ok, motivo) - PDF debe pesar > PDF_MIN_BYTES y tener texto > PDF_MIN_TEXTO."""
+        try:
+            if not os.path.exists(ruta_pdf):
+                return False, "archivo inexistente"
+            tam = os.path.getsize(ruta_pdf)
+            if tam < self.PDF_MIN_BYTES:
+                return False, f"PDF muy pequeño ({tam} bytes < {self.PDF_MIN_BYTES})"
+            texto = self._extraer_texto_pdf(ruta_pdf, max_paginas=2)
+            if len(texto.strip()) < self.PDF_MIN_TEXTO:
+                return False, f"PDF sin texto extraíble ({len(texto)} chars)"
+            return True, "ok"
+        except Exception as e:
+            return False, f"error validando PDF: {e}"
+
+    def _coincide_servicio_pdf(self, texto_pdf_norm, servicio_esperado):
+        """Devuelve True si el texto del PDF contiene el servicio esperado."""
+        if not servicio_esperado:
+            return True
+        sv = normalize_text(servicio_esperado)
+        if not sv:
+            return True
+        candidatos = {sv}
+        if "PSICOLOGIA CONTROL" in sv:
+            candidatos.update({"PSICOLOGIA CONTROL SM", "PSICOLOGIA SM", "PSICOLOGIA"})
+        if "PSICOLOGIA PRIMERA" in sv:
+            candidatos.update({"PSICOLOGIA PRIMERA VEZ", "VALORACION PSICOLOGIA"})
+        if "TRABAJO SOCIAL" in sv:
+            candidatos.update({"TRABAJO SOCIAL SM", "TRABAJO SOCIAL"})
+        if "PSIQUIATRIA" in sv:
+            candidatos.update({"PSIQUIATRIA SM", "PSIQUIATRIA"})
+        if "MEDICINA GENERAL" in sv:
+            candidatos.update({"MEDICINA GENERAL", "CONSULTA MEDICINA"})
+        if "TERAPIA FISICA" in sv or "FISIOTERAPIA" in sv:
+            candidatos.update({"TERAPIA FISICA", "FISIOTERAPIA"})
+        if "ENFERMERIA" in sv:
+            candidatos.update({"ENFERMERIA"})
+        if "ODONTOLOGIA" in sv:
+            candidatos.update({"ODONTOLOGIA"})
+        for c in candidatos:
+            if c and c in texto_pdf_norm:
+                return True
+        return False
+
+    def _extraer_fecha_pdf(self, texto_pdf_norm):
+        """Busca la primera fecha DD/MM/YYYY o DD-MM-YYYY en el texto."""
+        try:
+            import re as _re
+            m = _re.search(r"\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})\b", texto_pdf_norm)
+            if not m:
+                return None
+            d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            from datetime import datetime as _dt
+            return _dt(y, mo, d)
+        except Exception:
+            return None
+
+    def _fecha_en_rango(self, texto_pdf_norm, fecha_inicio, fecha_fin):
+        """True si la fecha del PDF cae dentro del rango [fecha_inicio, fecha_fin]."""
+        if not fecha_inicio or not fecha_fin:
+            return True
+        try:
+            from datetime import datetime as _dt
+            def _parse(s):
+                s = str(s).strip().replace("-", "/")
+                for fmt in ("%d/%m/%Y", "%d/%m/%y"):
+                    try:
+                        return _dt.strptime(s, fmt)
+                    except ValueError:
+                        continue
+                return None
+            fi = _parse(fecha_inicio)
+            ff = _parse(fecha_fin)
+            fpdf = self._extraer_fecha_pdf(texto_pdf_norm)
+            if not fi or not ff or not fpdf:
+                return True
+            return fi.date() <= fpdf.date() <= ff.date()
+        except Exception:
+            return True
+
+    def validar_pdf_descargado(self, ruta_pdf, servicio_esperado=None,
+                                fecha_inicio=None, fecha_fin=None):
+        """
+        Validación completa post-descarga.
+        Retorna (ok: bool, motivo: str).
+        """
+        ok, motivo = self._validar_pdf_no_vacio(ruta_pdf)
+        if not ok:
+            return False, motivo
+        texto = self._extraer_texto_pdf(ruta_pdf, max_paginas=2)
+        if servicio_esperado and not self._coincide_servicio_pdf(texto, servicio_esperado):
+            return False, f"servicio en PDF no coincide con '{servicio_esperado}'"
+        if not self._fecha_en_rango(texto, fecha_inicio, fecha_fin):
+            return False, f"fecha del PDF fuera del rango {fecha_inicio} - {fecha_fin}"
+        return True, "ok"
+
+    def _registrar_descarga_y_chequear_reinicio(self):
+        """
+        Incrementa el contador de descargas y reinicia el navegador
+        cada MAX_DESCARGAS_POR_SESION para evitar caducidad de sesión.
+        """
+        try:
+            self._descargas_en_sesion += 1
+            if self._descargas_en_sesion >= self.MAX_DESCARGAS_POR_SESION:
+                self.log(f"[MANTENIMIENTO] Alcanzadas {self._descargas_en_sesion} descargas en esta sesión. "
+                         f"Reiniciando navegador para evitar caducidad...")
+                self._descargas_en_sesion = 0
+                try:
+                    self.reiniciar_navegador_y_sesion(motivo="reinicio preventivo cada 50 descargas")
+                except Exception as e:
+                    self.log(f"[WARN] Falló reinicio preventivo: {e}")
+        except Exception:
+            pass
 
     def detectar_tipo_atencion(self, ruta_pdf):
         """
@@ -1806,7 +1969,7 @@ class Bot:
                         f.write(chunk)
 
             tipo_final = self.detectar_tipo_atencion(temp_file) if tipo_detectado_tabla in ("DESCONOCIDO", "OTRO") else tipo_detectado_tabla
-            self._mover_a_subcarpeta(temp_file, cedula, tipo_final, servicio, numero_factura=numero_factura)
+            self._mover_a_subcarpeta(temp_file, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
             self._cerrar_ventanas_auxiliares(ventanas_antes)
 
             archivo_final = self._esperar_archivo_descargado(archivos_antes, timeout=3)
@@ -2153,7 +2316,7 @@ class Bot:
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
                             return True, tipo_final
                         except Exception as e:
                             self.log(f"[WARN] No se pudo renombrar el archivo: {e}")
@@ -2161,7 +2324,7 @@ class Bot:
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
                             return True, tipo_final
                         finally:
                             # Siempre cerrar la ventana nueva si existe
@@ -2523,7 +2686,7 @@ class Bot:
                             else:
                                 tipo_final = tipo_detectado_tabla
 
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
                             return True, tipo_final
                         except Exception as e:
                             self.log(f"[WARN] No se pudo renombrar el archivo: {e}")
@@ -2539,7 +2702,7 @@ class Bot:
                             else:
                                 tipo_final = tipo_detectado_tabla
                             
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
                             return True, tipo_final
                     else:
                         self.log("[WARN] Tiempo de espera agotado. No se detectÃ³ descarga automÃ¡tica.")
