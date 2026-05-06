@@ -642,13 +642,14 @@ class HCTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ids: List[str] = []
+        self._rows: List[dict] = []   # filas completas con fechas por paciente
         self._build_ui()
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
 
         # ── Fechas compartidas ───────────────────────────────────────────
-        grp_fecha = QGroupBox("Rango de Fechas (aplica a todos los pacientes)")
+        grp_fecha = QGroupBox("Rango de Fechas (global — opcional si el Excel ya trae fechas por paciente)")
         lay.addWidget(grp_fecha)
         flay = QHBoxLayout(grp_fecha)
         flay.addWidget(QLabel("Fecha inicio:"))
@@ -698,11 +699,13 @@ class HCTab(QWidget):
         vmas.addLayout(hf)
 
         # Tabla de IDs
-        self.tabla = QTableWidget(0, 3)
-        self.tabla.setHorizontalHeaderLabels(["#", "ID / Documento", "Estado"])
+        self.tabla = QTableWidget(0, 5)
+        self.tabla.setHorizontalHeaderLabels(["#", "ID / Documento", "Fecha Inicio", "Fecha Fin", "Estado"])
         self.tabla.horizontalHeader().setStretchLastSection(True)
-        self.tabla.setColumnWidth(0, 45)
-        self.tabla.setColumnWidth(1, 180)
+        self.tabla.setColumnWidth(0, 40)
+        self.tabla.setColumnWidth(1, 150)
+        self.tabla.setColumnWidth(2, 100)
+        self.tabla.setColumnWidth(3, 100)
         self.tabla.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.tabla.setAlternatingRowColors(True)
         vmas.addWidget(self.tabla)
@@ -752,6 +755,7 @@ class HCTab(QWidget):
 
     def _cargar_ids(self, path: str):
         self._ids = []
+        self._rows = []
         self.tabla.setRowCount(0)
         try:
             p = Path(path)
@@ -774,36 +778,77 @@ class HCTab(QWidget):
                         self.log.append("[ERROR] No se pudo leer el CSV.")
                         return
 
+            # Normalizar nombres de columnas para búsqueda insensible
+            col_map = {c.strip().upper(): c for c in df.columns}
+
             # Buscar columna con IDs
             col = None
             for c in df.columns:
-                if c.strip().lower() in ("id", "documento", "cedula", "nro_documento", "id_paciente", "paciente"):
+                if c.strip().lower() in ("cc", "id", "documento", "cedula", "nro_documento", "id_paciente", "paciente"):
                     col = c
                     break
             if col is None:
                 col = df.columns[0]
                 self.log.append(f"[AVISO] Columna 'id' no encontrada, usando primera columna: '{col}'")
 
-            ids_raw = df[col].dropna().astype(str).str.strip().unique().tolist()
-            ids_raw = [x for x in ids_raw if x and x.lower() not in ("nan", "none", "")]
+            # Buscar columnas opcionales del Excel
+            def _find_col(*names):
+                for n in names:
+                    if n.upper() in col_map:
+                        return col_map[n.upper()]
+                return None
 
-            self._ids = ids_raw
-            self.tabla.setRowCount(len(ids_raw))
-            for i, id_val in enumerate(ids_raw):
+            col_fi   = _find_col("FECHA INICIO", "FECHA_INICIO", "F_INICIO", "DESDE")
+            col_ff   = _find_col("FECHA FIN", "FECHA_FIN", "F_FIN", "HASTA")
+            col_srv  = _find_col("SERVICIO")
+            col_est  = _find_col("ESTRATEGIA")
+            col_fac  = _find_col("NUMERO DE FACTURA", "NUMERO_FACTURA", "FACTURA", "NRO_FACTURA")
+
+            tiene_fechas = bool(col_fi and col_ff)
+            if tiene_fechas:
+                self.log.append(f"[OK] Columnas FECHA INICIO / FECHA FIN detectadas — se usarán fechas del Excel")
+            else:
+                self.log.append(f"[INFO] El Excel no tiene columnas de fecha — ingresa el rango global arriba")
+
+            # Construir lista de filas (sin duplicar IDs, preservar primera ocurrencia)
+            seen = set()
+            rows = []
+            for _, row in df.iterrows():
+                id_val = str(row[col]).strip() if row[col] == row[col] else ""
+                if not id_val or id_val.lower() in ("nan", "none", "") or id_val in seen:
+                    continue
+                seen.add(id_val)
+                rows.append({
+                    "id":           id_val,
+                    "fecha_inicio": str(row[col_fi]).strip()  if col_fi  and row[col_fi]  == row[col_fi]  else "",
+                    "fecha_fin":    str(row[col_ff]).strip()  if col_ff  and row[col_ff]  == row[col_ff]  else "",
+                    "servicio":     str(row[col_srv]).strip() if col_srv and row[col_srv] == row[col_srv] else "",
+                    "estrategia":   str(row[col_est]).strip() if col_est and row[col_est] == row[col_est] else "",
+                    "factura":      str(row[col_fac]).strip() if col_fac and row[col_fac] == row[col_fac] else "",
+                })
+
+            self._rows = rows
+            self._ids  = [r["id"] for r in rows]
+
+            self.tabla.setRowCount(len(rows))
+            for i, r in enumerate(rows):
                 self.tabla.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-                self.tabla.setItem(i, 1, QTableWidgetItem(id_val))
-                self.tabla.setItem(i, 2, QTableWidgetItem("Pendiente"))
+                self.tabla.setItem(i, 1, QTableWidgetItem(r["id"]))
+                self.tabla.setItem(i, 2, QTableWidgetItem(r["fecha_inicio"] or "—"))
+                self.tabla.setItem(i, 3, QTableWidgetItem(r["fecha_fin"]    or "—"))
+                self.tabla.setItem(i, 4, QTableWidgetItem("Pendiente"))
 
-            self.progress.setMaximum(len(ids_raw))
+            self.progress.setMaximum(len(rows))
             self.progress.setValue(0)
-            self.lbl_conteo.setText(f"{len(ids_raw)} pacientes cargados desde '{Path(path).name}'")
-            self.log.append(f"[OK] {len(ids_raw)} IDs cargados desde {Path(path).name}")
+            self.lbl_conteo.setText(f"{len(rows)} pacientes cargados desde '{Path(path).name}'")
+            self.log.append(f"[OK] {len(rows)} IDs cargados desde {Path(path).name}")
 
         except Exception as e:
             self.log.append(f"[ERROR] {e}")
 
     def _limpiar(self):
         self._ids = []
+        self._rows = []
         self.tabla.setRowCount(0)
         self.txt_archivo.clear()
         self.progress.setValue(0)
@@ -820,20 +865,36 @@ class HCTab(QWidget):
         self.log.append("[NOTA] Conectar con bot_engine.Bot para ejecucion real.")
 
     def _run_masiva(self):
-        if not self._ids:
+        if not self._rows:
             QMessageBox.warning(self, "Sin datos", "Primero carga un archivo con IDs de pacientes.")
             return
-        fi = self.txt_fi.text().strip()
-        ff = self.txt_ff.text().strip()
-        if not fi or not ff:
-            QMessageBox.warning(self, "Fechas requeridas", "Ingresa fecha inicio y fecha fin.")
+
+        fi_global = self.txt_fi.text().strip()
+        ff_global = self.txt_ff.text().strip()
+
+        # Verificar si las filas tienen fechas propias
+        tiene_fechas_excel = any(r["fecha_inicio"] and r["fecha_fin"] for r in self._rows)
+
+        # Si ninguna fila trae fechas Y el usuario no ingresó el rango global → error
+        if not tiene_fechas_excel and (not fi_global or not ff_global):
+            QMessageBox.warning(self, "Fechas requeridas",
+                "El archivo no contiene columnas FECHA INICIO / FECHA FIN.\n"
+                "Ingresa el rango de fechas global arriba.")
             return
-        self.log.append(f"[INICIO] Descarga masiva: {len(self._ids)} pacientes | {fi} → {ff}")
+
+        self.log.append(f"[INICIO] Descarga masiva: {len(self._rows)} pacientes")
+        if tiene_fechas_excel:
+            self.log.append("[INFO] Usando fechas individuales del Excel por paciente")
+        else:
+            self.log.append(f"[INFO] Usando rango global: {fi_global} → {ff_global}")
+
         self.progress.setValue(0)
-        self.progress.setMaximum(len(self._ids))
-        for i, id_val in enumerate(self._ids):
-            self.tabla.setItem(i, 2, QTableWidgetItem("En cola..."))
-            self.log.append(f"[{i+1}/{len(self._ids)}] Paciente {id_val} — en cola")
+        self.progress.setMaximum(len(self._rows))
+        for i, row in enumerate(self._rows):
+            fi = row["fecha_inicio"] or fi_global
+            ff = row["fecha_fin"]    or ff_global
+            self.tabla.setItem(i, 4, QTableWidgetItem("En cola..."))
+            self.log.append(f"[{i+1}/{len(self._rows)}] Paciente {row['id']} | {fi} → {ff}")
             self.progress.setValue(i + 1)
         self.log.append("[NOTA] Conectar cada item con bot_engine.Bot para ejecucion real.")
 
