@@ -63,7 +63,7 @@ except ImportError:
     load_main_config = _load_config
     save_main_config = _save_config
 
-VERSION = "1.0.0"
+VERSION = "9.3.1"
 MAX_BROWSERS = 5
 
 # ===========================================================================
