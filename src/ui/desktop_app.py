@@ -7,6 +7,8 @@ from __future__ import annotations
 import sys
 import json
 import os
+import threading
+import subprocess
 from pathlib import Path
 from typing import Optional, List
 
@@ -885,6 +887,8 @@ class MainWindow(QMainWindow):
         mh.addAction("Verificar Navegadores", self.tab_nav.check_browsers)
         mh.addAction("Abrir Logs", lambda: os.startfile(str(_ROOT_DIR / "logs" / "runtime")))
         mh.addAction("Abrir Descargas", lambda: os.startfile(str(_ROOT_DIR / "downloads")))
+        mh.addSeparator()
+        mh.addAction("Buscar Actualizaciones", self._check_updates)
         my = mb.addMenu("Ayuda")
         my.addAction("Acerca de", self._about)
 
@@ -893,6 +897,85 @@ class MainWindow(QMainWindow):
         self.tab_cred._save_hc()
         self.tab_nav.save_config()
         self.statusBar().showMessage("Todo guardado")
+
+    def _check_updates(self):
+        self.statusBar().showMessage("Verificando actualizaciones...")
+        UPDATE_URL = "https://api.github.com/repos/PabloGra77/BOT-HC/releases/latest"
+
+        def do_check():
+            try:
+                import urllib.request
+                import json as _json
+                with urllib.request.urlopen(UPDATE_URL, timeout=8) as resp:
+                    data = _json.loads(resp.read().decode())
+                latest_tag = data.get("tag_name", "")
+                latest = latest_tag.lstrip("v")
+                if not latest or latest == VERSION:
+                    QTimer.singleShot(0, lambda: self.statusBar().showMessage(
+                        f"Ya tienes la versión más reciente (v{VERSION})"))
+                    return
+                assets = data.get("assets", [])
+                zip_asset = next((a for a in assets if a.get("name", "").endswith(".zip")), None)
+                download_url = zip_asset["browser_download_url"] if zip_asset else None
+
+                def ask():
+                    self.statusBar().showMessage(f"Nueva versión disponible: v{latest}")
+                    if not download_url:
+                        QMessageBox.information(self, "Actualización disponible",
+                            f"Nueva versión: v{latest}\nActual: v{VERSION}\n\n"
+                            "Descárgala en:\nhttps://github.com/PabloGra77/BOT-HC/releases")
+                        return
+                    r = QMessageBox.question(self, "Actualización disponible",
+                        f"Nueva versión: v{latest}  (actual: v{VERSION})\n\n"
+                        "¿Descargar ahora?\n"
+                        "El ZIP se guardará en tu carpeta Descargas.\n\n"
+                        "Después: extrae el ZIP y reemplaza tu carpeta BOT360.",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                    if r != QMessageBox.StandardButton.Yes:
+                        return
+
+                    def download():
+                        try:
+                            downloads = Path.home() / "Downloads"
+                            dest = downloads / zip_asset["name"]
+                            total = zip_asset.get("size", 0)
+                            received = 0
+                            with urllib.request.urlopen(download_url, timeout=60) as dl, \
+                                 open(dest, "wb") as f:
+                                while True:
+                                    chunk = dl.read(65536)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                                    received += len(chunk)
+                                    if total:
+                                        pct = int(received * 100 / total)
+                                        QTimer.singleShot(0, lambda p=pct:
+                                            self.statusBar().showMessage(f"Descargando... {p}%"))
+                            def done():
+                                self.statusBar().showMessage(f"v{latest} descargada en Descargas")
+                                r2 = QMessageBox.question(self, "Descarga completa",
+                                    f"Guardado en:\n{dest}\n\n"
+                                    "INSTRUCCIONES:\n"
+                                    "1. Extrae el ZIP en una carpeta nueva\n"
+                                    "2. Copia tu config/config.json a la nueva carpeta\n"
+                                    "3. Ejecuta BOT360.exe de la nueva carpeta\n\n"
+                                    "¿Abrir carpeta Descargas?",
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                                if r2 == QMessageBox.StandardButton.Yes:
+                                    subprocess.Popen(f'explorer "{downloads}"')
+                            QTimer.singleShot(0, done)
+                        except Exception as ex:
+                            QTimer.singleShot(0, lambda: self.statusBar().showMessage(
+                                f"Error al descargar: {ex}"))
+                    threading.Thread(target=download, daemon=True).start()
+
+                QTimer.singleShot(0, ask)
+            except Exception as ex:
+                QTimer.singleShot(0, lambda: self.statusBar().showMessage(
+                    f"Error al verificar: {ex}"))
+
+        threading.Thread(target=do_check, daemon=True).start()
 
     def _about(self):
         QMessageBox.about(
