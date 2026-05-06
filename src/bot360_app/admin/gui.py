@@ -351,22 +351,100 @@ class AdminPanelApp:
             try:
                 import urllib.request
                 import json as _json
+
                 with urllib.request.urlopen(UPDATE_CHECK_URL, timeout=8) as resp:
                     data = _json.loads(resp.read().decode())
-                latest = data.get("tag_name", "").lstrip("v")
-                if latest and latest != VERSION_ACTUAL:
-                    self.root.after(0, lambda: self.lbl_update_status.config(
-                        text=f"Nueva versión disponible: v{latest}", foreground="#e67e22"))
-                    self.root.after(0, lambda: messagebox.showinfo(
-                        "Actualización disponible",
-                        f"Nueva versión: v{latest}\nVersión actual: v{VERSION_ACTUAL}\n\n"
-                        "Visita GitHub para descargar la nueva versión.",
-                    ))
-                else:
+
+                latest_tag = data.get("tag_name", "")          # e.g. "v9.4"
+                latest     = latest_tag.lstrip("v")            # e.g. "9.4"
+
+                if not latest or latest == VERSION_ACTUAL:
                     self.root.after(0, lambda: self.lbl_update_status.config(
                         text=f"Tienes la versión más reciente (v{VERSION_ACTUAL}).",
                         foreground="#27ae60",
                     ))
+                    return
+
+                # Encontrar el asset .zip del release
+                assets     = data.get("assets", [])
+                zip_asset  = next(
+                    (a for a in assets if a.get("name", "").endswith(".zip")),
+                    None,
+                )
+                download_url = zip_asset["browser_download_url"] if zip_asset else None
+
+                self.root.after(0, lambda: self.lbl_update_status.config(
+                    text=f"Nueva versión disponible: v{latest}", foreground="#e67e22"))
+
+                def ask_download():
+                    if not download_url:
+                        messagebox.showinfo(
+                            "Actualización disponible",
+                            f"Nueva versión: v{latest}\nVersión actual: v{VERSION_ACTUAL}\n\n"
+                            "No se encontró el instalador automático.\n"
+                            "Descárgala manualmente en:\nhttps://github.com/PabloGra77/BOT-HC/releases",
+                        )
+                        return
+
+                    resp = messagebox.askyesno(
+                        "Actualización disponible",
+                        f"Nueva versión: v{latest}  (actual: v{VERSION_ACTUAL})\n\n"
+                        f"¿Descargar ahora?\n"
+                        f"El ZIP se guardará en tu carpeta Descargas.\n\n"
+                        f"Después: extrae el ZIP y reemplaza tu carpeta BOT360 actual.",
+                    )
+                    if not resp:
+                        return
+
+                    self.lbl_update_status.config(
+                        text=f"Descargando v{latest}...", foreground="#2980b9")
+
+                    def download():
+                        try:
+                            downloads = Path.home() / "Downloads"
+                            dest_path = downloads / zip_asset["name"]
+                            total     = zip_asset.get("size", 0)
+                            received  = 0
+
+                            with urllib.request.urlopen(download_url, timeout=60) as r, \
+                                 open(dest_path, "wb") as f:
+                                while True:
+                                    chunk = r.read(65536)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                                    received += len(chunk)
+                                    if total:
+                                        pct = int(received * 100 / total)
+                                        self.root.after(0, lambda p=pct: self.lbl_update_status.config(
+                                            text=f"Descargando... {p}%", foreground="#2980b9"))
+
+                            def done():
+                                self.lbl_update_status.config(
+                                    text=f"v{latest} descargada. Revisa tu carpeta Descargas.",
+                                    foreground="#27ae60",
+                                )
+                                if messagebox.askyesno(
+                                    "Descarga completa",
+                                    f"Archivo guardado en:\n{dest_path}\n\n"
+                                    "INSTRUCCIONES:\n"
+                                    "1. Extrae el ZIP en una carpeta nueva\n"
+                                    "2. Copia tu archivo config/config.json a la nueva carpeta\n"
+                                    "3. Ejecuta BOT360.exe de la nueva carpeta\n\n"
+                                    "¿Abrir la carpeta Descargas ahora?",
+                                ):
+                                    subprocess.Popen(f'explorer "{downloads}"')
+
+                            self.root.after(0, done)
+
+                        except Exception as ex:
+                            self.root.after(0, lambda: self.lbl_update_status.config(
+                                text=f"Error al descargar: {ex}", foreground="red"))
+
+                    threading.Thread(target=download, daemon=True).start()
+
+                self.root.after(0, ask_download)
+
             except Exception as ex:
                 self.root.after(0, lambda: self.lbl_update_status.config(
                     text=f"Error al verificar: {ex}", foreground="red"))
