@@ -906,71 +906,103 @@ class MainWindow(QMainWindow):
             try:
                 import urllib.request
                 import json as _json
+                import tempfile
+
                 with urllib.request.urlopen(UPDATE_URL, timeout=8) as resp:
                     data = _json.loads(resp.read().decode())
+
                 latest_tag = data.get("tag_name", "")
                 latest = latest_tag.lstrip("v")
+
                 if not latest or latest == VERSION:
                     QTimer.singleShot(0, lambda: self.statusBar().showMessage(
                         f"Ya tienes la versión más reciente (v{VERSION})"))
                     return
+
+                # Buscar el asset .exe directo (onefile build)
                 assets = data.get("assets", [])
-                zip_asset = next((a for a in assets if a.get("name", "").endswith(".zip")), None)
-                download_url = zip_asset["browser_download_url"] if zip_asset else None
+                exe_asset = next(
+                    (a for a in assets if a.get("name", "").lower().endswith(".exe")), None
+                )
+                download_url = exe_asset["browser_download_url"] if exe_asset else None
+                total_size   = exe_asset.get("size", 0) if exe_asset else 0
 
                 def ask():
                     self.statusBar().showMessage(f"Nueva versión disponible: v{latest}")
+                    size_mb = f"{total_size / 1_048_576:.1f} MB" if total_size else ""
                     if not download_url:
                         QMessageBox.information(self, "Actualización disponible",
                             f"Nueva versión: v{latest}\nActual: v{VERSION}\n\n"
+                            "No se encontró el .exe para descarga directa.\n"
                             "Descárgala en:\nhttps://github.com/PabloGra77/BOT-HC/releases")
                         return
+
                     r = QMessageBox.question(self, "Actualización disponible",
-                        f"Nueva versión: v{latest}  (actual: v{VERSION})\n\n"
-                        "¿Descargar ahora?\n"
-                        "El ZIP se guardará en tu carpeta Descargas.\n\n"
-                        "Después: extrae el ZIP y reemplaza tu carpeta BOT360.",
+                        f"Nueva versión: v{latest}  (actual: v{VERSION})\n"
+                        f"Tamaño: {size_mb}\n\n"
+                        "¿Actualizar ahora?\n\n"
+                        "El programa se cerrará, se actualizará y se reabrirá automáticamente.\n"
+                        "Tu configuración (config.json) no se toca.",
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                     if r != QMessageBox.StandardButton.Yes:
                         return
 
-                    def download():
+                    def download_and_replace():
                         try:
-                            downloads = Path.home() / "Downloads"
-                            dest = downloads / zip_asset["name"]
-                            total = zip_asset.get("size", 0)
+                            # 1. Descargar nuevo .exe a archivo temporal
+                            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".exe", prefix="BOT360_new_")
+                            os.close(tmp_fd)
                             received = 0
-                            with urllib.request.urlopen(download_url, timeout=60) as dl, \
-                                 open(dest, "wb") as f:
+
+                            with urllib.request.urlopen(download_url, timeout=120) as dl, \
+                                 open(tmp_path, "wb") as f:
                                 while True:
                                     chunk = dl.read(65536)
                                     if not chunk:
                                         break
                                     f.write(chunk)
                                     received += len(chunk)
-                                    if total:
-                                        pct = int(received * 100 / total)
+                                    if total_size:
+                                        pct = int(received * 100 / total_size)
                                         QTimer.singleShot(0, lambda p=pct:
-                                            self.statusBar().showMessage(f"Descargando... {p}%"))
-                            def done():
-                                self.statusBar().showMessage(f"v{latest} descargada en Descargas")
-                                r2 = QMessageBox.question(self, "Descarga completa",
-                                    f"Guardado en:\n{dest}\n\n"
-                                    "INSTRUCCIONES:\n"
-                                    "1. Extrae el ZIP en una carpeta nueva\n"
-                                    "2. Copia tu config/config.json a la nueva carpeta\n"
-                                    "3. Ejecuta BOT360.exe de la nueva carpeta\n\n"
-                                    "¿Abrir carpeta Descargas?",
-                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                                if r2 == QMessageBox.StandardButton.Yes:
-                                    subprocess.Popen(f'explorer "{downloads}"')
-                            QTimer.singleShot(0, done)
+                                            self.statusBar().showMessage(
+                                                f"Descargando actualización... {p}%"))
+
+                            # 2. Obtener ruta del .exe actual
+                            current_exe = Path(sys.executable if getattr(sys, "frozen", False)
+                                               else __file__).resolve()
+
+                            # 3. Crear script batch que espera cierre, reemplaza y relanza
+                            bat_fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="bot360_upd_")
+                            os.close(bat_fd)
+                            bat_content = (
+                                "@echo off\n"
+                                "timeout /t 2 /nobreak >nul\n"
+                                f'move /Y "{tmp_path}" "{current_exe}"\n'
+                                f'start "" "{current_exe}"\n'
+                                f'del "%~f0"\n'
+                            )
+                            with open(bat_path, "w") as bf:
+                                bf.write(bat_content)
+
+                            # 4. Lanzar script y cerrar app
+                            subprocess.Popen(
+                                ["cmd", "/c", bat_path],
+                                creationflags=subprocess.CREATE_NO_WINDOW,
+                            )
+                            QTimer.singleShot(0, lambda: QApplication.instance().quit())
+
                         except Exception as ex:
-                            QTimer.singleShot(0, lambda: self.statusBar().showMessage(
-                                f"Error al descargar: {ex}"))
-                    threading.Thread(target=download, daemon=True).start()
+                            QTimer.singleShot(0, lambda: (
+                                self.statusBar().showMessage(f"Error al actualizar: {ex}"),
+                                QMessageBox.critical(self, "Error de actualización",
+                                    f"No se pudo completar la actualización:\n{ex}"),
+                            ))
+
+                    threading.Thread(target=download_and_replace, daemon=True).start()
 
                 QTimer.singleShot(0, ask)
+
             except Exception as ex:
                 QTimer.singleShot(0, lambda: self.statusBar().showMessage(
                     f"Error al verificar: {ex}"))
