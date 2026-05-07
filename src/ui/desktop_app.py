@@ -73,7 +73,7 @@ except ImportError:
     load_main_config = _load_config
     save_main_config = _save_config
 
-VERSION = "10.0.22"
+VERSION = "10.0.23"
 MAX_BROWSERS = 5
 
 # ===========================================================================
@@ -1036,6 +1036,14 @@ class HCTab(QWidget):
         self.btn_detener = QPushButton("Detener")
         self.btn_detener.setProperty("class", "danger")
         self.btn_detener.clicked.connect(self._detener_masiva)
+        self.btn_continuar = QPushButton("▶️ Continuar")
+        self.btn_continuar.setProperty("class", "success")
+        self.btn_continuar.setToolTip(
+            "Reanuda la descarga desde el primer paciente PENDIENTE o FALLIDO,\n"
+            "omitiendo los que ya estan 'Con soporte'."
+        )
+        self.btn_continuar.clicked.connect(self._continuar_masiva)
+        self.btn_continuar.setEnabled(False)
         btn_validar = QPushButton("🔍 Validar PDFs descargados")
         btn_validar.setToolTip(
             "Escanea la carpeta de descargas y verifica que cada PDF tenga "
@@ -1055,6 +1063,7 @@ class HCTab(QWidget):
         )
         self.btn_keep_awake.toggled.connect(self._toggle_keep_awake)
         rb_mas.addWidget(btn_masiva); rb_mas.addWidget(self.btn_detener)
+        rb_mas.addWidget(self.btn_continuar)
         rb_mas.addWidget(btn_validar)
         rb_mas.addWidget(btn_limpiar); rb_mas.addWidget(btn_open2)
         rb_mas.addWidget(self.btn_keep_awake)
@@ -1495,8 +1504,106 @@ class HCTab(QWidget):
         self.log.append("[STOP] Solicitando detener (terminará tras paciente actual)...")
         try:
             self._worker.stop()
+            # Habilitar boton Continuar para reanudar despues
+            try:
+                self.btn_continuar.setEnabled(True)
+            except Exception:
+                pass
         except Exception as ex:
             self.log.append(f"[STOP] Error señalando detener: {ex}")
+
+    def _continuar_masiva(self):
+        """Reanuda la descarga masiva tomando solo los pacientes que aun NO
+        tienen estado 'con_soporte'. Util tras pulsar Detener o tras un cierre.
+        """
+        if self._worker and self._worker.isRunning():
+            QMessageBox.information(self, "En ejecución",
+                "Ya hay una descarga en curso. Pulsa Detener primero.")
+            return
+        if not self._rows:
+            QMessageBox.warning(self, "Sin datos", "Primero carga un archivo.")
+            return
+        if not self._row_status or len(self._row_status) != len(self._rows):
+            self._row_status = ["pendiente"] * len(self._rows)
+
+        # Filtrar pacientes pendientes / fallidos / sin_hc (no descargados ok).
+        indices_pendientes = [i for i, s in enumerate(self._row_status)
+                              if s in ("pendiente", "fallido", "sin_hc")]
+        if not indices_pendientes:
+            QMessageBox.information(self, "Nada que continuar",
+                "Todos los pacientes ya estan 'Con soporte'.")
+            return
+
+        fi_global = self.txt_fi.text().strip()
+        ff_global = self.txt_ff.text().strip()
+        try:
+            from agenda_app.bot.runner import run_hc_job
+            from agenda_app.domain.requests import HCRequest
+        except Exception as ex:
+            QMessageBox.critical(self, "Error de importación",
+                f"No se pudo cargar el motor del bot:\n{ex}")
+            return
+
+        pacientes = []
+        for i in indices_pendientes:
+            r = self._rows[i]
+            f_ini = r["fecha_inicio"] or fi_global
+            f_fin = r["fecha_fin"] or ff_global
+            factura = r["factura"] or ""
+            ingreso = r.get("ingreso") or ""
+            pacientes.append({
+                "cedula":              r["id"],
+                "servicio":            r["servicio"]    or "",
+                "estrategia":          r["estrategia"]  or "RECIENTE",
+                "fecha_inicio":        f_ini,
+                "fecha_fin":           f_fin,
+                "numero_factura":      factura,
+                "numero_ingreso":      ingreso,
+                "FECHA INICIO":        f_ini,
+                "FECHA FIN":           f_fin,
+                "NUMERO DE FACTURA":   factura,
+                "NUMERO DE INGRESO":   ingreso,
+            })
+
+        try:
+            req = HCRequest(
+                cedula="",
+                fecha_inicio=fi_global or "",
+                fecha_fin=ff_global or "",
+                servicio="Todos",
+                estrategia="RECIENTE",
+                ruta_descarga="",
+                pacientes_excel=pacientes,
+            )
+        except Exception as ex:
+            QMessageBox.critical(self, "Error", f"No se pudo construir la petición:\n{ex}")
+            return
+
+        # NO reseteamos _row_status (preservamos los que ya estan con_soporte).
+        # Marcamos los reanudados como pendiente para que el progreso refleje bien.
+        for i in indices_pendientes:
+            self._row_status[i] = "pendiente"
+            self.tabla.setItem(i, 5, QTableWidgetItem("Pendiente"))
+
+        total_global = len(self._rows)
+        completados_global = sum(1 for s in self._row_status if s == "con_soporte")
+        self.progress.setMaximum(total_global)
+        self.progress.setValue(completados_global)
+        self.log.append(f"[CONTINUAR] Reanudando {len(indices_pendientes)} pacientes pendientes "
+                        f"(ya completados: {completados_global}/{total_global})")
+
+        self._stop_event = __import__("threading").Event()
+        self._worker = _HCWorker(req, self._stop_event, run_hc_job)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.log_message.connect(lambda msg: self.log.append(msg))
+        self._worker.finished_ok.connect(self._on_finished)
+        try:
+            if hasattr(self, "btn_keep_awake") and not self.btn_keep_awake.isChecked():
+                self.btn_keep_awake.setChecked(True)
+        except Exception:
+            pass
+        self.btn_continuar.setEnabled(False)
+        self._worker.start()
 
     def _open(self):
         d = _ROOT_DIR / "downloads" / "hc"
@@ -1728,6 +1835,8 @@ class MainWindow(QMainWindow):
         mh.addSeparator()
         mh.addAction("Buscar Actualizaciones", self._check_updates)
         my = mb.addMenu("Ayuda")
+        my.addAction("Descargar Plantilla Excel", self._descargar_plantilla)
+        my.addSeparator()
         my.addAction("Acerca de", self._about)
 
     def _save_all(self):
@@ -1735,6 +1844,87 @@ class MainWindow(QMainWindow):
         self.tab_cred._save_hc()
         self.tab_nav.save_config()
         self.statusBar().showMessage("Todo guardado")
+
+    def _descargar_plantilla(self):
+        """Genera y guarda la plantilla Excel oficial para Descarga Masiva.
+        Incluye la columna NUMERO DE INGRESO y ejemplos de RANGO FECHAS.
+        """
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+        except Exception as ex:
+            QMessageBox.critical(self, "Falta openpyxl",
+                f"No se pudo cargar openpyxl:\n{ex}")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar plantilla Excel",
+            str(Path.home() / "Downloads" / "PLANTILLA_BOT360.xlsx"),
+            "Excel (*.xlsx)"
+        )
+        if not path:
+            return
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "PACIENTES"
+            headers = ["CC", "SERVICIO", "ESTRATEGIA", "FECHA INICIO", "FECHA FIN",
+                       "NUMERO DE FACTURA", "NUMERO DE INGRESO"]
+            ws.append(headers)
+            ejemplos = [
+                ["1151937573", "MEDICINA GENERAL", "RECIENTE",     "01/01/2026", "07/05/2026", "", ""],
+                ["1151937573", "MEDICINA GENERAL", "RANGO FECHAS", "01/01/2026", "07/05/2026", "", ""],
+                ["1151937573", "MEDICINA GENERAL", "RECIENTE",     "01/01/2026", "07/05/2026", "", "8939140"],
+                ["52123456",   "PSIQUIATRIA",      "EVOLUCION",    "01/03/2026", "30/04/2026", "", ""],
+                ["80123456",   "PSICOLOGIA CONTROL SM", "ANTIGUA", "01/01/2026", "07/05/2026", "", ""],
+            ]
+            for f in ejemplos:
+                ws.append(f)
+            hf = Font(bold=True, color="FFFFFF")
+            hfill = PatternFill("solid", fgColor="1F4E78")
+            for col in range(1, len(headers) + 1):
+                c = ws.cell(row=1, column=col)
+                c.font = hf; c.fill = hfill
+                c.alignment = Alignment(horizontal="center")
+            for i, w in enumerate([14, 24, 16, 14, 14, 22, 22], start=1):
+                ws.column_dimensions[chr(64 + i)].width = w
+
+            ws2 = wb.create_sheet("INSTRUCCIONES")
+            inst = [
+                ["Columna", "Obligatoria", "Descripcion"],
+                ["CC", "SI", "Cedula del paciente."],
+                ["SERVICIO", "Recomendado", "Nombre EXACTO del servicio en INPEC360."],
+                ["ESTRATEGIA", "No", "RECIENTE | ANTIGUA | RANGO FECHAS | EVOLUCION | VALORACION | PRIMERA VEZ."],
+                ["FECHA INICIO", "No*", "DD/MM/YYYY. Si vacia se usa la fecha global del UI."],
+                ["FECHA FIN", "No*", "DD/MM/YYYY. Si vacia se usa la fecha global del UI."],
+                ["NUMERO DE FACTURA", "No", "Si se llena, se anexa al nombre del PDF."],
+                ["NUMERO DE INGRESO", "No", "Si se llena: descarga SOLO la HC con ese ingreso."],
+                ["", "", ""],
+                ["MODO RANGO FECHAS", "", "Descarga TODAS las HC ATENDIDAS en el rango. Nombre: CC_SERVICIO_INGRESO.pdf"],
+                ["ESTADOS DESCARTADOS", "", "NO ASISTIDA, CANCELADA, POR ATENDER (no se descargan)."],
+            ]
+            for fila in inst:
+                ws2.append(fila)
+            for col in range(1, 4):
+                c = ws2.cell(row=1, column=col)
+                c.font = hf; c.fill = hfill
+            ws2.column_dimensions["A"].width = 22
+            ws2.column_dimensions["B"].width = 14
+            ws2.column_dimensions["C"].width = 95
+
+            wb.save(path)
+            self.statusBar().showMessage(f"Plantilla guardada: {path}")
+            r = QMessageBox.question(self, "Plantilla creada",
+                f"Plantilla generada en:\n{path}\n\n¿Abrirla ahora?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if r == QMessageBox.StandardButton.Yes:
+                try:
+                    os.startfile(path)
+                except Exception:
+                    pass
+        except Exception as ex:
+            QMessageBox.critical(self, "Error",
+                f"No se pudo crear la plantilla:\n{ex}")
 
     def _check_updates(self):
         self.statusBar().showMessage("Verificando actualizaciones...")
