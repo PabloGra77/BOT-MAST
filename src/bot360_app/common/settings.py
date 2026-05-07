@@ -2,11 +2,29 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 
-BASE_DIR = Path(__file__).resolve().parents[3]
+def _resolve_base_dir() -> Path:
+    """Carpeta raíz que contiene config/, logs/, downloads/, etc.
+
+    - Ejecución normal con Python -> tres niveles arriba de este archivo.
+    - Empaquetado con PyInstaller (`sys.frozen`) -> carpeta donde está el .exe,
+      NO la carpeta temporal `_MEIxxxx`. Esto permite que `config.json`,
+      `logs/` y `downloads/` persistan entre ejecuciones, junto al ejecutable.
+    - Override por variable de entorno `BOT360_BASE_DIR`.
+    """
+    override = os.environ.get("BOT360_BASE_DIR")
+    if override:
+        return Path(override).resolve()
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
+
+
+BASE_DIR = _resolve_base_dir()
 CONFIG_DIR = BASE_DIR / "config"
 LOGS_DIR = BASE_DIR / "logs"
 RUNTIME_LOG_DIR = LOGS_DIR / "runtime"

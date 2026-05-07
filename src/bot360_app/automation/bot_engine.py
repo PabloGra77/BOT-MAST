@@ -186,15 +186,36 @@ class Bot:
         except Exception as e:
             self.log(f"[ERROR] FallÃ³ al ingresar hora {hora}: {e}")
 
+    # Diccionario de alias / abreviaciones de servicios para el dropdown
+    # NOTA: Por decision del usuario el matching es ESTRICTO EXACTO. Este
+    # diccionario se conserva vacio a proposito; NO se usan alias.
+    _ALIAS_SERVICIO = {}
+
+    def _normalizar_servicio_estricto(self, texto):
+        """Normaliza para comparacion EXACTA:
+        - upper
+        - sin tildes (NFD + ascii)
+        - sin signos de puntuacion (.,;:- etc)
+        - colapsa espacios
+        """
+        if not texto:
+            return ""
+        import re as _re
+        t = normalize_text(texto)  # ya hace upper + strip tildes + collapse spaces
+        # eliminar todo lo que no sea letra/numero/espacio
+        t = _re.sub(r"[^A-Z0-9 ]+", " ", t)
+        return " ".join(t.split())
+
     def seleccionar_servicio(self, elemento, texto_servicio):
         """
-        Intenta seleccionar un servicio buscando coincidencias flexibles.
-        Soporta coincidencia exacta, parcial y por tokens (palabras clave).
+        Selecciona el servicio del dropdown HACIENDO MATCH EXACTO contra las
+        opciones disponibles (despues de normalizar tildes y puntuacion).
+        Si NO hay coincidencia exacta -> devuelve False (no descarga nada).
         """
         try:
             self.resaltar_elemento(elemento)
             select = Select(elemento)
-            
+
             def _seleccionar_y_confirmar(texto_opcion):
                 select.select_by_visible_text(texto_opcion)
                 try:
@@ -205,44 +226,30 @@ class Bot:
                     )
                 except Exception:
                     pass
-                seleccionado = normalize_text(select.first_selected_option.text)
-                esperado = normalize_text(texto_opcion)
-                if esperado and esperado not in seleccionado and seleccionado not in esperado:
-                    self.log(f"[WARN] El servicio no quedó seleccionado como se esperaba: '{seleccionado}'")
+                seleccionado_norm = self._normalizar_servicio_estricto(select.first_selected_option.text)
+                esperado_norm = self._normalizar_servicio_estricto(texto_opcion)
+                if seleccionado_norm != esperado_norm:
+                    self.log(f"[WARN] El servicio no quedo seleccionado como se esperaba: '{select.first_selected_option.text}'")
                     return False
                 self.log(f"[INFO] Servicio seleccionado: {select.first_selected_option.text}")
                 return True
 
-            # 1. Intento Exacto
-            try:
-                return _seleccionar_y_confirmar(texto_servicio)
-            except: pass
-            
+            target_norm = self._normalizar_servicio_estricto(texto_servicio)
+            if not target_norm:
+                self.log("[WARN] Servicio vacio, no se selecciona nada")
+                return False
+
             opciones = select.options
-            texto_servicio_upper = texto_servicio.upper().strip()
-            
-            # 2. Intento Parcial (Substring directo)
+
+            # UNICA estrategia: match EXACTO normalizado.
             for op in opciones:
-                op_text = op.text.upper().strip()
-                if texto_servicio_upper in op_text:
-                    self.log(f"[INFO] Coincidencia parcial: '{texto_servicio}' -> '{op.text}'")
+                if self._normalizar_servicio_estricto(op.text) == target_norm:
+                    self.log(f"[INFO] Match exacto: '{texto_servicio}' -> '{op.text}'")
                     return _seleccionar_y_confirmar(op.text)
 
-            # 3. Intento por Tokens (Palabras sueltas)
-            # Ãštil si buscamos "GIL JOHN" y la opciÃ³n es "GIL PEREZ JOHN JAIRO"
-            tokens = texto_servicio_upper.split()
-            if len(tokens) > 1:
-                for op in opciones:
-                    op_text = op.text.upper().strip()
-                    # Verificar si TODAS las palabras buscadas estÃ¡n en la opciÃ³n
-                    if all(token in op_text for token in tokens):
-                        self.log(f"[INFO] Coincidencia por tokens: '{texto_servicio}' -> '{op.text}'")
-                        return _seleccionar_y_confirmar(op.text)
-            
-            self.log(f"[WARN] No se encontrÃ³ servicio: {texto_servicio}")
-            # Listar opciones para debug
-            self.log(f"       Opciones disponibles: {[o.text for o in opciones[:5]]}...")
-            return False
+            # Sin match exacto: log con TODAS las opciones para diagnostico y FALLA.
+            self.log(f"[ERROR] Servicio NO encontrado en el dropdown: '{texto_servicio}' (normalizado: '{target_norm}')")
+            self.log(f"        Opciones disponibles ({len(opciones)}): {[o.text for o in opciones]}")
             
         except Exception as e:
             self.log(f"[ERROR] Error seleccionando servicio: {e}")
@@ -1549,8 +1556,102 @@ class Bot:
         nombre = " ".join("".join(permitido).strip().split()).upper()
         return (nombre or "GEN")[:60]
 
+    def _eliminar_pdfs_duplicados_recientes(self, archivos_antes, ventana_segundos=15):
+        """Elimina cualquier PDF que aparecio en la RAIZ de download_dir
+        despues del snapshot ``archivos_antes`` y dentro de los ultimos
+        ``ventana_segundos`` segundos. Esto cubre el caso en que Chrome
+        auto-descarga el mismo PDF en paralelo a nuestra descarga via
+        requests / mover, dejando un duplicado huerfano.
+
+        Es seguro: solo borra .pdf que esten SUELTOS en la raiz, nunca toca
+        las subcarpetas de servicio. Si no hay duplicados, no hace nada.
+        """
+        eliminados = 0
+        try:
+            base = getattr(self, "download_dir", None)
+            if not base or not os.path.isdir(base):
+                return 0
+            ahora = time.time()
+            archivos_antes = set(archivos_antes or [])
+            for nombre in os.listdir(base):
+                ruta = os.path.join(base, nombre)
+                if not os.path.isfile(ruta):
+                    continue
+                low = nombre.lower()
+                if not low.endswith(".pdf"):
+                    continue
+                if nombre in archivos_antes:
+                    continue
+                try:
+                    edad = ahora - os.path.getmtime(ruta)
+                except Exception:
+                    continue
+                if edad > ventana_segundos:
+                    continue
+                try:
+                    os.remove(ruta)
+                    eliminados += 1
+                    self.log(f"[DEDUP] Duplicado eliminado de raiz: {nombre}")
+                except Exception as e:
+                    self.log(f"[DEDUP] No se pudo borrar duplicado {nombre}: {e}")
+        except Exception as e:
+            self.log(f"[DEDUP] Error general: {e}")
+        return eliminados
+
+    def barrer_pdfs_huerfanos(self, cedula=None, servicio=None):
+        """Mueve cualquier PDF que haya quedado SUELTO en la raiz de
+        ``download_dir`` (es decir, no dentro de una subcarpeta de servicio)
+        hacia la carpeta del servicio indicado. Si no hay servicio, los pone
+        en ``_SIN_CLASIFICAR/``.
+
+        Esto es una RED DE SEGURIDAD para PDFs que no fueron movidos por el
+        flujo normal (timeouts del watcher de descarga, errores intermedios,
+        archivos temporales, etc.).
+        Devuelve la lista de rutas finales movidas.
+        """
+        movidos = []
+        try:
+            base = getattr(self, "download_dir", None)
+            if not base or not os.path.isdir(base):
+                return movidos
+            destino_base = self._nombre_carpeta_servicio(servicio) if servicio else "_SIN_CLASIFICAR"
+            destino_dir = os.path.join(base, destino_base)
+            for nombre in os.listdir(base):
+                ruta = os.path.join(base, nombre)
+                if not os.path.isfile(ruta):
+                    continue
+                low = nombre.lower()
+                if not low.endswith(".pdf"):
+                    continue
+                # No mover archivos en proceso de descarga
+                if low.endswith(".crdownload") or low.endswith(".tmp") or low.endswith(".part"):
+                    continue
+                if not os.path.isdir(destino_dir):
+                    os.makedirs(destino_dir, exist_ok=True)
+                    self.log(f"[BARRIDO] Carpeta creada: {destino_dir}")
+                # Renombrar para evitar colisiones
+                cc = str(cedula).strip() if cedula else ""
+                base_nombre = nombre
+                if cc and cc not in base_nombre:
+                    base_nombre = f"{cc}_{nombre}"
+                destino_final = os.path.join(destino_dir, base_nombre)
+                contador = 1
+                stem, ext = os.path.splitext(base_nombre)
+                while os.path.exists(destino_final):
+                    destino_final = os.path.join(destino_dir, f"{stem}_{contador}{ext}")
+                    contador += 1
+                try:
+                    shutil.move(ruta, destino_final)
+                    movidos.append(destino_final)
+                    self.log(f"[BARRIDO] PDF huerfano movido: {nombre} -> {destino_final}")
+                except Exception as e:
+                    self.log(f"[BARRIDO] No se pudo mover {nombre}: {e}")
+        except Exception as e:
+            self.log(f"[BARRIDO] Error general: {e}")
+        return movidos
+
     def _mover_a_subcarpeta(self, ruta_archivo, cedula, tipo_atencion, servicio, numero_factura=None,
-                             fecha_inicio=None, fecha_fin=None):
+                             fecha_inicio=None, fecha_fin=None, numero_ingreso=None):
         """
         Organiza descargas por servicio:
         Downloads/HC_MASIVA_xxx/<SERVICIO>/<CC_SIGLA[_FACTURA]>.pdf
@@ -1565,7 +1666,9 @@ class Bot:
             if not os.path.exists(ruta_archivo):
                 return ruta_archivo
 
-            # --- VALIDACIÓN PREVIA AL MOVIMIENTO ---
+            # --- VALIDACION POST-DESCARGA (informativa, NO bloqueante) ---
+            # El usuario quiere que TODO PDF descargado quede en la carpeta del
+            # servicio. Si la validacion falla solo se loggea como advertencia.
             try:
                 ok, motivo = self.validar_pdf_descargado(
                     ruta_archivo,
@@ -1574,14 +1677,9 @@ class Bot:
                     fecha_fin=fecha_fin,
                 )
                 if not ok:
-                    self.log(f"[VALIDACION] PDF rechazado para CC={cedula}: {motivo}")
-                    try:
-                        os.remove(ruta_archivo)
-                    except Exception:
-                        pass
-                    return None
+                    self.log(f"[VALIDACION] PDF dudoso para CC={cedula}: {motivo} (se conserva en carpeta del servicio)")
             except Exception as e:
-                self.log(f"[WARN] Error en validación previa de PDF: {e} — se continúa con el movimiento")
+                self.log(f"[WARN] Error en validacion previa de PDF: {e} - se continua con el movimiento")
 
             cc = str(cedula).strip()
             cod_servicio = self._codigo_servicio_por_contexto(servicio, tipo_atencion)
@@ -1592,10 +1690,14 @@ class Bot:
                 os.makedirs(carpeta_destino, exist_ok=True)
                 self.log(f"[INFO] Carpeta creada: {carpeta_destino}")
 
-            if factura:
-                nombre_archivo = f"{cc}_{cod_servicio}_{factura}.pdf"
+            ingreso = self._normalizar_numero_factura(numero_ingreso)
+            # Prioridad de naming: ingreso > factura > base. (Pref. usuario: MAYUSCULA)
+            if ingreso:
+                nombre_archivo = f"{cc}_{cod_servicio}_{ingreso}.pdf".upper()
+            elif factura:
+                nombre_archivo = f"{cc}_{cod_servicio}_{factura}.pdf".upper()
             else:
-                nombre_archivo = f"{cc}_{cod_servicio}.pdf"
+                nombre_archivo = f"{cc}_{cod_servicio}.pdf".upper()
             ruta_canonica = os.path.join(carpeta_destino, nombre_archivo)
 
             # Evitar duplicados: si ya existe ese tipo/servicio para la cédula, no guardar otro.
@@ -1829,6 +1931,28 @@ class Bot:
         except Exception:
             return ""
 
+    def _extraer_numero_ingreso_de_fila(self, texto_fila):
+        """Extrae el numero de ingreso (columna 'Ingreso' de la tabla INPEC360).
+        El ingreso suele ser un entero de 6-9 digitos. Se prioriza el numero mas
+        grande del rango aceptado dentro del texto de la fila para evitar confundirlo
+        con la cedula u otros codigos. Devuelve string sin signos o '' si no aplica.
+        """
+        try:
+            import re as _re
+            if not texto_fila:
+                return ""
+            tokens = _re.findall(r"\b\d{6,9}\b", str(texto_fila))
+            if not tokens:
+                return ""
+            # Heuristica: el ingreso suele ser de 7-8 digitos. Tomamos el ultimo
+            # numero de 6-9 digitos que NO coincida con una cedula tipica (>=9).
+            candidatos = [t for t in tokens if 6 <= len(t) <= 8]
+            if not candidatos:
+                return ""
+            return candidatos[-1]
+        except Exception:
+            return ""
+
     def _normalizar_fecha_ddmmyyyy(self, valor):
         """
         Normaliza fechas de entrada a DD/MM/YYYY.
@@ -1936,7 +2060,7 @@ class Bot:
         except Exception:
             return False
 
-    def _descargar_pdf_desde_contexto_actual(self, cedula, ventanas_antes, archivos_antes, numero_factura, tipo_detectado_tabla, servicio):
+    def _descargar_pdf_desde_contexto_actual(self, cedula, ventanas_antes, archivos_antes, numero_factura, tipo_detectado_tabla, servicio, fecha_inicio=None, fecha_fin=None, numero_ingreso=None):
         try:
             current_url = self.driver.current_url
             if not current_url:
@@ -1969,17 +2093,26 @@ class Bot:
                         f.write(chunk)
 
             tipo_final = self.detectar_tipo_atencion(temp_file) if tipo_detectado_tabla in ("DESCONOCIDO", "OTRO") else tipo_detectado_tabla
-            self._mover_a_subcarpeta(temp_file, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+            self._mover_a_subcarpeta(
+                temp_file, cedula, tipo_final, servicio,
+                numero_factura=numero_factura,
+                fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+                numero_ingreso=numero_ingreso,
+            )
             self._cerrar_ventanas_auxiliares(ventanas_antes)
+            # Limpiar cualquier PDF DUPLICADO que Chrome haya auto-descargado en paralelo.
+            try:
+                self._eliminar_pdfs_duplicados_recientes(archivos_antes, ventana_segundos=15)
+            except Exception:
+                pass
 
-            archivo_final = self._esperar_archivo_descargado(archivos_antes, timeout=3)
             self.log(f"[EXITO] PDF descargado y pestaña cerrada para CC={cedula}.")
-            return tipo_final or archivo_final
+            return tipo_final
         except Exception as e:
             self.log(f"[WARN] Falló descarga directa del PDF abierto: {e}")
             return None
 
-    def descargar_historia_clinica(self, cedula, fecha_inicio, fecha_fin, servicio=None, estrategia="RECIENTE", tipo_hc_objetivo=None, _reintento=0, numero_factura=None):
+    def descargar_historia_clinica(self, cedula, fecha_inicio, fecha_fin, servicio=None, estrategia="RECIENTE", tipo_hc_objetivo=None, _reintento=0, numero_factura=None, numero_ingreso=None):
         # Crear solo la carpeta de servicio antes de intentar la descarga.
         try:
             base_dir = self.download_dir if hasattr(self, 'download_dir') else 'downloads'
@@ -2098,7 +2231,7 @@ class Bot:
                 self.log(f"[ERROR CRITICO] Fallo al escribir Fecha Fin: {e}")
                 
 
-            # Servicio (Si aplica)
+            # Servicio (Si aplica) - OBLIGATORIO si viene en el Excel
             try:
                 el_serv = self.buscar_elemento_en_frames(*SELECTORES["hc_servicio"])
                 sel_servicio = Select(el_serv)
@@ -2111,14 +2244,18 @@ class Bot:
                 # Seleccionar el servicio si se proporciona
                 if servicio:
                     if not self.seleccionar_servicio(el_serv, servicio):
-                        self.log(f"[WARN] No se pudo seleccionar el servicio solicitado: {servicio}")
-                    else:
-                        seleccionado = normalize_text(sel_servicio.first_selected_option.text)
-                        solicitado = normalize_text(servicio)
-                        if solicitado and solicitado not in seleccionado and seleccionado not in solicitado:
-                            raise Exception(f"El servicio seleccionado no coincide. solicitado='{servicio}' seleccionado='{sel_servicio.first_selected_option.text}'")
+                        # NO continuar: si el servicio no se pudo seleccionar,
+                        # el bot descargaría "cualquier cosa". Abortar el paciente.
+                        raise Exception(f"SERVICIO_NO_DISPONIBLE: '{servicio}' no existe en el dropdown del paciente {cedula}")
+                    seleccionado_norm = self._normalizar_servicio_estricto(sel_servicio.first_selected_option.text)
+                    solicitado_norm   = self._normalizar_servicio_estricto(servicio)
+                    if solicitado_norm and solicitado_norm != seleccionado_norm:
+                        raise Exception(f"SERVICIO_MISMATCH: solicitado='{servicio}' (norm='{solicitado_norm}') seleccionado='{sel_servicio.first_selected_option.text}' (norm='{seleccionado_norm}')")
+                    self.log(f"[OK] Servicio confirmado en form: '{sel_servicio.first_selected_option.text}' (solicitado='{servicio}')")
             except Exception as e:
-                self.log(f"[WARN] No se pudo inicializar el selector de servicio: {e}")
+                # Reraise: no podemos consultar sin el servicio correcto
+                self.log(f"[ABORTAR] Servicio no seleccionable para CC={cedula}: {e}")
+                raise
 
             btn_consultar = self.driver.find_element(*SELECTORES["hc_btn_consultar"])
             self.resaltar_elemento(btn_consultar)
@@ -2190,8 +2327,56 @@ class Bot:
                      # with open("debug_no_buttons.html", "w") as f: f.write(self.driver.page_source)
                      raise Exception("Tabla cargada pero sin botones de descarga identificables")
                 
-                self.log(f"[INFO] Se encontraron {len(btns_print)} historias clÃ­nicas disponibles.")
-                
+                self.log(f"[INFO] Se encontraron {len(btns_print)} historias clinicas disponibles.")
+
+                # ===== ESTRATEGIA RANGO FECHAS =====
+                # Descarga TODAS las HC validas que el paciente tenga en el rango.
+                # Cada PDF se nombra <CC>_<COD_SERVICIO>_<NUMERO_INGRESO>.pdf
+                _est_norm = str(estrategia or "").upper().strip().replace("_", " ")
+                if _est_norm in ("RANGO FECHAS", "RANGO") and not numero_ingreso:
+                    ingresos_unicos = []
+                    seen_ing = set()
+                    for _btn in btns_print:
+                        try:
+                            _txt = self._texto_fila_por_boton(_btn)
+                            _txtu = (_txt or "").upper()
+                            if any(s in _txtu for s in ("NO ASISTIDA", "CANCELADA", "POR ATENDER")):
+                                continue
+                            _ing = self._extraer_numero_ingreso_de_fila(_txt)
+                            if not _ing or _ing in seen_ing:
+                                continue
+                            seen_ing.add(_ing)
+                            ingresos_unicos.append(_ing)
+                        except Exception:
+                            continue
+                    self.log(f"[INFO] RANGO FECHAS: {len(ingresos_unicos)} ingresos validos detectados: {ingresos_unicos}")
+                    if not ingresos_unicos:
+                        return False, "RANGO FECHAS: sin registros validos en el rango"
+                    descargados = []
+                    fallos = []
+                    for _ing in ingresos_unicos:
+                        try:
+                            ok_i, info_i = self.descargar_historia_clinica(
+                                cedula=cedula,
+                                fecha_inicio=fecha_inicio,
+                                fecha_fin=fecha_fin,
+                                servicio=servicio,
+                                estrategia="RECIENTE",
+                                tipo_hc_objetivo=None,
+                                _reintento=2,
+                                numero_factura=numero_factura,
+                                numero_ingreso=_ing,
+                            )
+                            if ok_i:
+                                descargados.append(_ing)
+                            else:
+                                fallos.append(f"{_ing}:{info_i}")
+                        except Exception as _e:
+                            fallos.append(f"{_ing}:{_e}")
+                    if descargados:
+                        return True, f"RANGO FECHAS: {len(descargados)} descargados ({','.join(descargados)})"
+                    return False, f"RANGO FECHAS sin descargas. fallos={fallos}"
+
                 target_btn = None
                 tipo_detectado_tabla = "DESCONOCIDO"
                 idx_btn_seleccionado = None
@@ -2210,6 +2395,13 @@ class Bot:
                     texto_fila = self._texto_fila_por_boton(btn_actual)
                     texto_fila_up = texto_fila.upper()
                     tipo_fila = self._detectar_tipo_en_texto_fila(texto_fila)
+
+                    # Filtro por NUMERO DE INGRESO (Excel) si se solicito uno especifico.
+                    if numero_ingreso:
+                        _ing_fila = self._extraer_numero_ingreso_de_fila(texto_fila)
+                        if str(_ing_fila).strip() != str(numero_ingreso).strip():
+                            self.log(f"[INFO] Fila {idx+1} descartada: ingreso fila={_ing_fila} != solicitado={numero_ingreso}")
+                            continue
 
                     # Regla solicitada: para Psiquiatria filtrar por tipo de HC pedido en estrategia.
                     if es_psiquiatria and tipo_objetivo_norm and tipo_fila not in (tipo_objetivo_norm, "OTRO"):
@@ -2232,6 +2424,8 @@ class Bot:
                     break
 
                 if target_btn is None:
+                    if numero_ingreso:
+                        return False, f"Sin registro con numero de ingreso {numero_ingreso} en el rango de fechas"
                     if tipo_objetivo_norm:
                         return False, f"Sin registros tipo {tipo_objetivo_norm} en el rango de fechas"
                     return False, "Sin registros validos para descargar en el rango de fechas"
@@ -2299,6 +2493,9 @@ class Bot:
                             numero_factura=numero_factura,
                             tipo_detectado_tabla=tipo_detectado_tabla,
                             servicio=servicio,
+                            fecha_inicio=fecha_inicio,
+                            fecha_fin=fecha_fin,
+                            numero_ingreso=numero_ingreso,
                         )
                         if tipo_descargado:
                             return True, tipo_descargado
@@ -2316,7 +2513,12 @@ class Bot:
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
+                            # DEDUP: eliminar PDFs extra que Chrome haya auto-descargado en paralelo.
+                            try:
+                                self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
+                            except Exception:
+                                pass
                             return True, tipo_final
                         except Exception as e:
                             self.log(f"[WARN] No se pudo renombrar el archivo: {e}")
@@ -2324,7 +2526,11 @@ class Bot:
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
+                            try:
+                                self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
+                            except Exception:
+                                pass
                             return True, tipo_final
                         finally:
                             # Siempre cerrar la ventana nueva si existe
@@ -2488,6 +2694,9 @@ class Bot:
                             numero_factura=numero_factura,
                             tipo_detectado_tabla=tipo_detectado_tabla,
                             servicio=servicio,
+                            fecha_inicio=fecha_inicio,
+                            fecha_fin=fecha_fin,
+                            numero_ingreso=numero_ingreso,
                         )
                         if tipo_descargado:
                             return True, tipo_descargado
@@ -2686,7 +2895,11 @@ class Bot:
                             else:
                                 tipo_final = tipo_detectado_tabla
 
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
+                            try:
+                                self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
+                            except Exception:
+                                pass
                             return True, tipo_final
                         except Exception as e:
                             self.log(f"[WARN] No se pudo renombrar el archivo: {e}")
@@ -2702,7 +2915,7 @@ class Bot:
                             else:
                                 tipo_final = tipo_detectado_tabla
                             
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
                             return True, tipo_final
                     else:
                         self.log("[WARN] Tiempo de espera agotado. No se detectÃ³ descarga automÃ¡tica.")

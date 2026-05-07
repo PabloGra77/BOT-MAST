@@ -1,9 +1,22 @@
 from datetime import datetime
+import logging
 import re
+import unicodedata
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
 
+
+def _normalizar_header(s) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower().strip()
+    s = re.sub(r"[\s\-_./]+", " ", s)
+    return s
 
 
 def _inicio_meses_atras(fecha_str, meses_atras=1):
@@ -80,20 +93,66 @@ def extract_hc_request_data(flask_request) -> dict:
 
 def _parse_pacientes_excel(archivo) -> list[dict]:
     df = pd.read_excel(archivo)
-    df.columns = [str(c).lower().strip() for c in df.columns]
+    cabeceras_originales = list(df.columns)
+    df.columns = [_normalizar_header(c) for c in df.columns]
+    logger.info(
+        "[HC EXCEL] Cabeceras detectadas: originales=%s -> normalizadas=%s",
+        cabeceras_originales, list(df.columns),
+    )
 
-    col_cc = next((c for c in df.columns if c in ["cc", "cedula", "documento", "id"]), None)
-    cols_serv = [c for c in df.columns if "servicio" in c or "area" in c]
-    if not cols_serv:
-        cols_serv = [c for c in df.columns if c in ["servicio", "area"]]
+    def _buscar_col(opciones_exactas, contiene=None):
+        norm_opts = {_normalizar_header(o) for o in opciones_exactas}
+        for c in df.columns:
+            if c in norm_opts:
+                return c
+        if contiene:
+            for c in df.columns:
+                for token in contiene:
+                    if token in c:
+                        return c
+        return None
 
-    col_est = next((c for c in df.columns if c in ["estrategia", "preferencia", "tipo"]), None)
-    col_f_ini = next((c for c in df.columns if c in ["fecha inicio", "fecha_inicio", "desde", "f_ini", "fecha_desde"]), None)
-    col_f_fin = next((c for c in df.columns if c in ["fecha fin", "fecha_fin", "hasta", "f_fin", "fecha_hasta"]), None)
-    col_numero_factura = next((c for c in df.columns if c in ["numero de factura", "numero_factura", "factura", "nro factura", "nro_factura"]), None)
+    col_cc = _buscar_col(
+        ["cc", "cedula", "documento", "id", "numero documento", "no documento", "doc"],
+        contiene=["cedul", "docum"],
+    )
+    cols_serv = [c for c in df.columns if "servic" in c or "area" in c or "especialidad" in c]
+    col_est = _buscar_col(
+        ["estrategia", "preferencia", "tipo", "orden"],
+        contiene=["estrateg", "preferen"],
+    )
+    col_f_ini = _buscar_col(
+        ["fecha inicio", "fecha_inicio", "desde", "f_ini", "fecha_desde",
+         "fecha desde", "inicio", "fec inicio", "fecini"],
+        contiene=["inici", "desde"],
+    )
+    col_f_fin = _buscar_col(
+        ["fecha fin", "fecha_fin", "hasta", "f_fin", "fecha_hasta",
+         "fecha hasta", "fin", "fec fin", "fecfin"],
+        contiene=["hasta", "fin"],
+    )
+    col_numero_factura = _buscar_col(
+        ["numero de factura", "numero_factura", "factura", "nro factura",
+         "nro_factura", "no factura", "n factura"],
+        contiene=["factur"],
+    )
+    col_numero_ingreso = _buscar_col(
+        ["numero de ingreso", "numero ingreso", "numero_ingreso",
+         "nro ingreso", "nro_ingreso", "no ingreso", "n ingreso", "ingreso"],
+        contiene=["ingreso"],
+    )
+
+    logger.info(
+        "[HC EXCEL] Columnas mapeadas: cc=%s, servicios=%s, estrategia=%s, "
+        "f_inicio=%s, f_fin=%s, factura=%s, ingreso=%s",
+        col_cc, cols_serv, col_est, col_f_ini, col_f_fin, col_numero_factura, col_numero_ingreso,
+    )
 
     if not col_cc:
-        raise ValueError("No se encontró la columna de Cédula (CC) en el Excel")
+        raise ValueError(
+            "No se encontro la columna de Cedula (CC) en el Excel. "
+            f"Cabeceras detectadas: {cabeceras_originales}"
+        )
 
     pacientes = []
     for _, row in df.iterrows():
@@ -113,6 +172,11 @@ def _parse_pacientes_excel(archivo) -> list[dict]:
 
         servicios = _collect_servicios(row, cols_serv)
         numero_factura = str(row[col_numero_factura]).strip() if col_numero_factura and pd.notna(row[col_numero_factura]) else None
+        numero_ingreso_raw = str(row[col_numero_ingreso]).strip() if col_numero_ingreso and pd.notna(row[col_numero_ingreso]) else None
+        if numero_ingreso_raw and numero_ingreso_raw.endswith(".0"):
+            numero_ingreso_raw = numero_ingreso_raw[:-2]
+        if numero_ingreso_raw and numero_ingreso_raw.lower() in ("nan", "none", ""):
+            numero_ingreso_raw = None
         for servicio_item in servicios:
             pacientes.append(
                 {
@@ -123,9 +187,15 @@ def _parse_pacientes_excel(archivo) -> list[dict]:
                     "fecha_fin": fecha_fin,
                     "numero_factura": numero_factura,
                     "NUMERO DE FACTURA": numero_factura,
+                    "numero_ingreso": numero_ingreso_raw,
+                    "NUMERO DE INGRESO": numero_ingreso_raw,
                 }
             )
 
+    logger.info(
+        "[HC EXCEL] Resultado: %d pacientes generados desde %d filas.",
+        len(pacientes), len(df),
+    )
     return pacientes
 
 

@@ -313,6 +313,21 @@ def _obtener_numero_factura_paciente(paciente):
     return None
 
 
+def _obtener_numero_ingreso_paciente(paciente):
+    if not isinstance(paciente, dict):
+        return None
+    for clave in ("numero_ingreso", "numero de ingreso", "NUMERO DE INGRESO",
+                  "NUMERO INGRESO", "nro_ingreso", "ingreso"):
+        if clave in paciente and str(paciente.get(clave) or "").strip():
+            valor = str(paciente.get(clave)).strip()
+            if valor.endswith(".0"):
+                valor = valor[:-2]
+            if valor.lower() in ("nan", "none", ""):
+                return None
+            return valor
+    return None
+
+
 def run_bot_job(req: AgendaRequest):
     profesional = buscar_profesional_por_cc(req.cc)
     if profesional is None:
@@ -478,11 +493,41 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
     logger.info(f"Carpeta de lote creada: {carpeta_lote}")
 
 
-    # HC en paralelo con hasta tres navegadores: Edge, Chrome, y Chrome (perfil aislado)
-    max_browsers = 3
-    browser_pool = ["edge", "chrome", "chrome"][:min(max_browsers, len(pacientes))] if len(pacientes) > 1 else ["edge"]
-    worker_count = min(len(browser_pool), len(pacientes))
-    browser_pool = browser_pool[:worker_count]
+    # HC en paralelo: respeta cantidad_max del config y # real de credenciales.
+    # Cada navegador usa una credencial distinta para evitar colisiones de sesion.
+    credenciales_pool = _cargar_credenciales_hc()
+    n_creds_validas = len([c for c in credenciales_pool if c])
+    try:
+        with open(Config.CONFIG_JSON_PATH, "r", encoding="utf-8") as _fcfg:
+            _cfg_full = json.load(_fcfg)
+        cantidad_max_cfg = int((_cfg_full.get("navegadores") or {}).get("cantidad_max", 1))
+        navegador_tipo = str((_cfg_full.get("navegadores") or {}).get("tipo", "chrome")).strip().lower()
+    except Exception:
+        cantidad_max_cfg = 1
+        navegador_tipo = "chrome"
+
+    if navegador_tipo not in ("chrome", "edge"):
+        navegador_tipo = "chrome"
+
+    # ABSOLUTE TOPE: no abrir mas navegadores que credenciales validas, ni mas
+    # que lo solicitado por el usuario, ni mas que pacientes.
+    tope_logico = max(1, cantidad_max_cfg)
+    if n_creds_validas > 0:
+        tope_logico = min(tope_logico, n_creds_validas)
+    tope_logico = min(tope_logico, len(pacientes))
+    worker_count = max(1, tope_logico)
+
+    # Construir el pool: cada hilo usa el navegador elegido por el usuario.
+    # (Si el usuario eligio chrome, todos seran chrome con perfiles aislados;
+    # si eligio edge, todos seran edge.)
+    browser_pool = [navegador_tipo] * worker_count
+    max_browsers = worker_count
+    logger.info(
+        "HC paralelismo: tipo=%s, solicitado=%d, credenciales=%d, pacientes=%d, "
+        "workers efectivos=%d",
+        navegador_tipo, cantidad_max_cfg, n_creds_validas, len(pacientes), worker_count,
+    )
+
     total_pacientes = len(pacientes)
     progress_lock = threading.Lock()
     progress_state = {"completed": 0}
@@ -490,8 +535,6 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
     lotes = [[] for _ in range(worker_count)]
     for p in pacientes:
         lotes[p["_idx"] % worker_count].append(p)
-
-    credenciales_pool = _cargar_credenciales_hc()
 
     def _procesar_lote(pacientes_lote, browser_preferido, idx_hilo, allow_browser_fallback=True):
         local_report = []
@@ -553,6 +596,9 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                 servicio = p.get("servicio") or req.servicio
                 estrategia = p.get("estrategia") or req.estrategia
                 orden_estrategia, tipo_hc_objetivo = _parse_estrategia(estrategia)
+                numero_ingreso_pac = _obtener_numero_ingreso_paciente(p)
+                _est_norm_pac = str(estrategia or "").upper().strip().replace("_", " ")
+                es_rango_fechas = _est_norm_pac in ("RANGO FECHAS", "RANGO")
 
                 f_ini_paciente = p.get("fecha_inicio")
                 f_fin_paciente = p.get("fecha_fin")
@@ -604,10 +650,13 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                             )
 
                     ya_existe = False
-                    if tipo_hc_objetivo:
-                        ya_existe = _ya_existe_descarga_tipo(bot.download_dir, cedula, servicio, tipo_hc_objetivo)
-                    else:
-                        ya_existe = _ya_existe_descarga_servicio(bot.download_dir, cedula, servicio)
+                    # En modo RANGO FECHAS o cuando se solicita un ingreso especifico,
+                    # NO saltamos por cache: pueden existir mas HCs por descargar.
+                    if not es_rango_fechas and not numero_ingreso_pac:
+                        if tipo_hc_objetivo:
+                            ya_existe = _ya_existe_descarga_tipo(bot.download_dir, cedula, servicio, tipo_hc_objetivo)
+                        else:
+                            ya_existe = _ya_existe_descarga_servicio(bot.download_dir, cedula, servicio)
 
                     if ya_existe:
                         estado = "TIENE HC"
@@ -626,9 +675,10 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                                     fecha_inicio=f_inicio_final,
                                     fecha_fin=f_fin_final,
                                     servicio=servicio,
-                                    estrategia=orden_estrategia,
+                                    estrategia=("RANGO FECHAS" if es_rango_fechas else orden_estrategia),
                                     tipo_hc_objetivo=tipo_hc_objetivo,
                                     numero_factura=_obtener_numero_factura_paciente(p),
+                                    numero_ingreso=numero_ingreso_pac,
                                 )
                                 if not exito and _es_resultado_sin_hc(info):
                                     # "Sin resultados" se considera resultado funcional de negocio.
@@ -672,6 +722,15 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                     estado = "ERROR"
                     detalle = str(e)
 
+                # RED DE SEGURIDAD: tras cada paciente, mover cualquier PDF que
+                # haya quedado suelto en la raiz de download_dir a la carpeta
+                # del servicio que se acaba de procesar.
+                try:
+                    if bot is not None and hasattr(bot, "barrer_pdfs_huerfanos"):
+                        bot.barrer_pdfs_huerfanos(cedula=cedula, servicio=servicio)
+                except Exception as ex_barrido:
+                    logger.warning("Barrido post-paciente fallo CC=%s: %s", cedula, ex_barrido)
+
                 local_report.append({
                     "_idx": i_global,
                     "Cedula": cedula,
@@ -714,6 +773,13 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                 })
         finally:
             if bot is not None:
+                # Barrido FINAL del lote: cualquier PDF suelto que quede en
+                # la raiz se va a _SIN_CLASIFICAR antes de cerrar el navegador.
+                try:
+                    if hasattr(bot, "barrer_pdfs_huerfanos"):
+                        bot.barrer_pdfs_huerfanos(cedula=None, servicio=None)
+                except Exception:
+                    logger.warning("Barrido final de lote fallo en %s", browser_preferido, exc_info=True)
                 try:
                     bot.cerrar()
                 except Exception:

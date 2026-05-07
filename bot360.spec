@@ -8,11 +8,18 @@ Compilar: pyinstaller bot360.spec
 import sys
 import os
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 # Ruta del proyecto (SPECPATH es la variable de PyInstaller con el directorio del .spec)
 PROJECT_ROOT = Path(SPECPATH).resolve()
 
 block_cipher = None
+
+# Recolectar TODOS los submódulos de paquetes con carga dinámica
+_selenium_subs = collect_submodules('selenium')
+_wdm_subs = collect_submodules('webdriver_manager')
+_agenda_subs = collect_submodules('agenda_app')
+_bot360_subs = collect_submodules('bot360_app')
 
 a = Analysis(
     [str(PROJECT_ROOT / 'src' / 'ui' / 'desktop_app.py')],
@@ -23,10 +30,6 @@ a = Analysis(
         (str(PROJECT_ROOT / 'docs'), 'docs'),
     ],
     hiddenimports=[
-        'selenium',
-        'selenium.webdriver',
-        'selenium.webdriver.chrome',
-        'selenium.webdriver.edge',
         'PyQt6',
         'PyQt6.QtCore',
         'PyQt6.QtGui',
@@ -35,7 +38,9 @@ a = Analysis(
         'openpyxl',
         'requests',
         'fitz',
-    ],
+        'PyMuPDF',
+        'psutil',
+    ] + _selenium_subs + _wdm_subs + _agenda_subs + _bot360_subs,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -22,6 +22,16 @@ if str(_SRC_DIR) not in sys.path:
 if str(_ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(_ROOT_DIR))
 
+# Cuando corre como .exe (PyInstaller), __file__ apunta a la carpeta temporal
+# _MEIxxxx. config/, logs/, downloads/ deben vivir junto al .exe para persistir.
+_BASE_OVERRIDE = os.environ.get("BOT360_BASE_DIR")
+if _BASE_OVERRIDE:
+    _DATA_DIR = Path(_BASE_OVERRIDE).resolve()
+elif getattr(sys, "frozen", False):
+    _DATA_DIR = Path(sys.executable).resolve().parent
+else:
+    _DATA_DIR = _ROOT_DIR
+
 try:
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -40,7 +50,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
-_CONFIG_PATH = _ROOT_DIR / "config" / "config.json"
+_CONFIG_PATH = _DATA_DIR / "config" / "config.json"
 
 def _load_config() -> dict:
     if _CONFIG_PATH.exists():
@@ -63,7 +73,7 @@ except ImportError:
     load_main_config = _load_config
     save_main_config = _save_config
 
-VERSION = "10.0.0"
+VERSION = "10.0.22"
 MAX_BROWSERS = 5
 
 # ===========================================================================
@@ -112,220 +122,290 @@ QStatusBar {background: #0f3460; color: #a0a0b0; border-top: 1px solid #e94560;}
 # ===========================================================================
 # Tab: Credenciales
 # ===========================================================================
+# Valores fijos (siempre los mismos para INPEC360)
+INPEC_URL_FIJA   = "https://sisipec.salud360.app/Inpec360/servlet/ingreso"
+INPEC_VERIF_FIJO = "Inpec"
+
+
 class CredencialesTab(QWidget):
+    """
+    Tabla unificada: cada fila = un usuario = un navegador.
+    El usuario #1 actúa como Principal (también para Agendas).
+    Verificación y URL se asignan automáticamente (siempre 'Inpec' y la URL fija).
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._hc_data: List[dict] = []
+        self._users: List[dict] = []
         self._build_ui()
         self.load_from_config()
 
     def _build_ui(self):
         main = QVBoxLayout(self)
 
-        # Credencial Principal
-        grp_main = QGroupBox("Credencial Principal  (para Agendas)")
-        main.addWidget(grp_main)
-        vl = QVBoxLayout(grp_main)
+        titulo = QLabel("Usuarios INPEC360")
+        titulo.setStyleSheet("color:#e94560; font-size:16px; font-weight:bold;")
+        main.addWidget(titulo)
 
-        form = QFormLayout()
-        self.txt_user = QLineEdit()
-        self.txt_user.setPlaceholderText("Usuario del sistema (ej: PGRANADOS)")
-        self.txt_pass = QLineEdit()
-        self.txt_pass.setEchoMode(QLineEdit.EchoMode.Password)
-        self.txt_pass.setPlaceholderText("Contrasena")
-        self.txt_verif = QLineEdit()
-        self.txt_verif.setPlaceholderText("Numero de verificacion (ej: Inpec)")
-        self.txt_url = QLineEdit()
-        self.txt_url.setPlaceholderText("URL del portal")
+        info = QLabel(
+            "Cada usuario que agregues abre un navegador para descargar en paralelo.\n"
+            "El primer usuario también se usa para crear Agendas.\n"
+            f"Verificación fija: <b>{INPEC_VERIF_FIJO}</b>  ·  "
+            f"URL fija: <code>{INPEC_URL_FIJA}</code>\n"
+            "Los datos se guardan automáticamente en config.json y persisten al cerrar."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#8888cc; font-size:11px; padding:4px;")
+        main.addWidget(info)
 
-        # fila pass con toggle
-        rp = QHBoxLayout()
-        rp.addWidget(self.txt_pass)
-        btn_tp = QPushButton("Mostrar")
-        btn_tp.setFixedWidth(72)
-        btn_tp.clicked.connect(lambda: self._toggle(self.txt_pass, btn_tp))
-        rp.addWidget(btn_tp)
-        wp = QWidget(); wp.setLayout(rp)
-
-        form.addRow("Usuario:", self.txt_user)
-        form.addRow("Contrasena:", wp)
-        form.addRow("Verificacion:", self.txt_verif)
-        form.addRow("URL:", self.txt_url)
-        vl.addLayout(form)
-
-        rb = QHBoxLayout()
-        btn_g = QPushButton("Guardar Credencial Principal")
-        btn_g.setProperty("class", "success")
-        btn_g.clicked.connect(self.save_main_cred)
-        btn_p = QPushButton("Probar URL")
-        btn_p.clicked.connect(self._probar_url)
-        rb.addWidget(btn_g)
-        rb.addWidget(btn_p)
-        vl.addLayout(rb)
-
-        # Credenciales HC
-        grp_hc = QGroupBox("Credenciales HC  (una por navegador adicional)")
-        main.addWidget(grp_hc)
-        vl2 = QVBoxLayout(grp_hc)
-
-        lbl_info = QLabel("Agrega credenciales adicionales para ejecutar descargas HC en paralelo.")
-        lbl_info.setWordWrap(True)
-        lbl_info.setStyleSheet("color:#8888cc; font-size:11px;")
-        vl2.addWidget(lbl_info)
+        self.lbl_count = QLabel("Sin usuarios guardados.")
+        self.lbl_count.setStyleSheet(
+            "color:#e6edf3; font-size:13px; font-weight:bold; padding:6px; "
+            "background:#0d1117; border:1px solid #30363d; border-radius:6px;"
+        )
+        main.addWidget(self.lbl_count)
 
         self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["Usuario", "Contrasena", "Verificacion", "URL"])
+        self.tbl.setHorizontalHeaderLabels(["#", "Rol", "Usuario", "Contraseña"])
+        self.tbl.setColumnWidth(0, 50)
+        self.tbl.setColumnWidth(1, 130)
+        self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tbl.setMaximumHeight(160)
-        vl2.addWidget(self.tbl)
+        self.tbl.setMinimumHeight(220)
+        self.tbl.doubleClicked.connect(lambda *_: self._edit())
+        main.addWidget(self.tbl)
 
-        rb2 = QHBoxLayout()
+        rb = QHBoxLayout()
         for lbl_btn, slot, cls in [
-            ("Agregar HC", self._add, ""),
-            ("Editar", self._edit, ""),
-            ("Eliminar", self._del, "danger"),
-            ("Guardar HCs", self._save_hc, "success"),
+            ("➕ Agregar Usuario", self._add,  "success"),
+            ("✏ Editar",          self._edit, ""),
+            ("🗑 Eliminar",        self._del,  "danger"),
+            ("🌐 Probar URL",      self._probar_url, ""),
         ]:
             b = QPushButton(lbl_btn)
             if cls:
                 b.setProperty("class", cls)
             b.clicked.connect(slot)
-            rb2.addWidget(b)
-        vl2.addLayout(rb2)
+            rb.addWidget(b)
+        main.addLayout(rb)
 
         self.lbl_st = QLabel("")
         self.lbl_st.setStyleSheet("color:#22cc44; font-size:11px;")
         main.addWidget(self.lbl_st)
         main.addStretch()
 
-    # helpers
-    def _toggle(self, field, btn):
-        if field.echoMode() == QLineEdit.EchoMode.Password:
-            field.setEchoMode(QLineEdit.EchoMode.Normal)
-            btn.setText("Ocultar")
-        else:
-            field.setEchoMode(QLineEdit.EchoMode.Password)
-            btn.setText("Mostrar")
-
+    # ---------- helpers ----------
     def _refresh_table(self):
         self.tbl.setRowCount(0)
-        for r, c in enumerate(self._hc_data):
+        for r, c in enumerate(self._users):
             self.tbl.insertRow(r)
-            self.tbl.setItem(r, 0, QTableWidgetItem(c.get("usuario", "")))
-            masked = "*" * len(c.get("contrasena", ""))
-            self.tbl.setItem(r, 1, QTableWidgetItem(masked))
-            self.tbl.setItem(r, 2, QTableWidgetItem(c.get("numero_verificacion", "")))
-            self.tbl.setItem(r, 3, QTableWidgetItem(c.get("url", "")))
+            self.tbl.setItem(r, 0, QTableWidgetItem(f"Nav. {r+1}"))
+            rol = "⭐ Principal + HC" if r == 0 else "HC (paralelo)"
+            self.tbl.setItem(r, 1, QTableWidgetItem(rol))
+            self.tbl.setItem(r, 2, QTableWidgetItem(c.get("usuario", "")))
+            masked = "•" * max(len(c.get("contrasena", "")), 4)
+            self.tbl.setItem(r, 3, QTableWidgetItem(masked))
+        n = len(self._users)
+        if n == 0:
+            self.lbl_count.setText("⚠ Sin usuarios guardados — pulsa 'Agregar Usuario' para empezar.")
+            self.lbl_count.setStyleSheet(
+                "color:#f59e0b; font-size:13px; font-weight:bold; padding:6px; "
+                "background:#0d1117; border:1px solid #f59e0b; border-radius:6px;"
+            )
+        elif n == 1:
+            self.lbl_count.setText(
+                f"✅ 1 usuario guardado  →  1 navegador  (sin paralelismo HC)"
+            )
+            self.lbl_count.setStyleSheet(
+                "color:#22c55e; font-size:13px; font-weight:bold; padding:6px; "
+                "background:#0d1117; border:1px solid #22c55e; border-radius:6px;"
+            )
+        else:
+            self.lbl_count.setText(
+                f"✅ {n} usuarios guardados  →  {n} navegadores en paralelo"
+            )
+            self.lbl_count.setStyleSheet(
+                "color:#22c55e; font-size:13px; font-weight:bold; padding:6px; "
+                "background:#0d1117; border:1px solid #22c55e; border-radius:6px;"
+            )
 
     def _status(self, msg, color="#22cc44"):
         self.lbl_st.setText(msg)
         self.lbl_st.setStyleSheet(f"color:{color}; font-size:11px;")
 
-    # acciones
+    def _persistir(self):
+        """Guarda inmediatamente en config.json (no requiere botón aparte)."""
+        cfg = load_main_config()
+        if self._users:
+            principal = self._users[0]
+            cfg["credenciales"] = {
+                "usuario":             principal.get("usuario", ""),
+                "contrasena":          principal.get("contrasena", ""),
+                "numero_verificacion": INPEC_VERIF_FIJO,
+                "url":                 INPEC_URL_FIJA,
+            }
+            cfg["credenciales_hc"] = [
+                {
+                    "usuario":             u.get("usuario", ""),
+                    "contrasena":          u.get("contrasena", ""),
+                    "numero_verificacion": INPEC_VERIF_FIJO,
+                    "url":                 INPEC_URL_FIJA,
+                }
+                for u in self._users
+            ]
+        else:
+            cfg["credenciales"] = {}
+            cfg["credenciales_hc"] = []
+        save_main_config(cfg)
+
+    # ---------- carga / persistencia ----------
     def load_from_config(self):
         cfg = load_main_config()
-        c = cfg.get("credenciales", {})
-        self.txt_user.setText(c.get("usuario", ""))
-        self.txt_pass.setText(c.get("contrasena", ""))
-        self.txt_verif.setText(c.get("numero_verificacion", ""))
-        self.txt_url.setText(c.get("url", ""))
-        self._hc_data = list(cfg.get("credenciales_hc", []))
+        usuarios = []
+        # 1. Principal (si existe)
+        principal = cfg.get("credenciales", {}) or {}
+        if principal.get("usuario"):
+            usuarios.append({
+                "usuario":    str(principal.get("usuario", "")).strip().upper(),
+                "contrasena": principal.get("contrasena", ""),
+            })
+        # 2. HC adicionales (evitar duplicar el principal)
+        for h in cfg.get("credenciales_hc", []) or []:
+            u = str(h.get("usuario", "")).strip().upper()
+            if u and not any(x["usuario"] == u for x in usuarios):
+                usuarios.append({
+                    "usuario":    u,
+                    "contrasena": h.get("contrasena", ""),
+                })
+        self._users = usuarios
         self._refresh_table()
 
-    def save_main_cred(self):
-        if not self.txt_user.text().strip():
-            QMessageBox.warning(self, "Error", "El usuario no puede estar vacio.")
-            return
-        cfg = load_main_config()
-        cfg["credenciales"] = {
-            "usuario": self.txt_user.text().strip().upper(),
-            "contrasena": self.txt_pass.text(),
-            "numero_verificacion": self.txt_verif.text().strip(),
-            "url": self.txt_url.text().strip(),
-        }
-        save_main_config(cfg)
-        self._status("Credencial principal guardada")
-
-    def _save_hc(self):
-        cfg = load_main_config()
-        cfg["credenciales_hc"] = self._hc_data
-        save_main_config(cfg)
-        self._status(f"{len(self._hc_data)} credencial(es) HC guardadas")
-
+    # ---------- acciones ----------
     def _add(self):
-        if len(self._hc_data) >= MAX_BROWSERS:
-            QMessageBox.warning(self, "Limite", f"Maximo {MAX_BROWSERS} credenciales HC.")
+        if len(self._users) >= MAX_BROWSERS:
+            QMessageBox.warning(self, "Límite",
+                f"Máximo {MAX_BROWSERS} usuarios (= {MAX_BROWSERS} navegadores en paralelo).")
             return
         dlg = _CredDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             d = dlg.get_data()
-            if d["usuario"]:
-                self._hc_data.append(d)
-                self._refresh_table()
-                self._status("HC agregada — recuerda guardar", "#ffaa00")
+            if not d["usuario"]:
+                return
+            if any(u["usuario"] == d["usuario"] for u in self._users):
+                QMessageBox.warning(self, "Duplicado",
+                    f"Ya existe un usuario '{d['usuario']}'.")
+                return
+            self._users.append(d)
+            self._refresh_table()
+            self._persistir()
+            self._status(
+                f"➕ Agregado '{d['usuario']}'  ·  guardado en config.json  "
+                f"·  total: {len(self._users)} navegador(es)")
 
     def _edit(self):
         r = self.tbl.currentRow()
         if r < 0:
-            QMessageBox.information(self, "Info", "Selecciona una fila.")
+            QMessageBox.information(self, "Selecciona",
+                "Selecciona primero una fila (o haz doble clic).")
             return
-        dlg = _CredDialog(self, self._hc_data[r])
+        dlg = _CredDialog(self, self._users[r])
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._hc_data[r] = dlg.get_data()
+            self._users[r] = dlg.get_data()
             self._refresh_table()
-            self._status("HC modificada — recuerda guardar", "#ffaa00")
+            self._persistir()
+            self._status(
+                f"✏ Modificado '{self._users[r]['usuario']}'  ·  guardado en config.json")
 
     def _del(self):
         r = self.tbl.currentRow()
         if r < 0:
+            QMessageBox.information(self, "Selecciona", "Selecciona primero una fila.")
             return
-        u = self._hc_data[r].get("usuario", "")
-        if QMessageBox.question(self, "Eliminar", f"Eliminar '{u}'?") == QMessageBox.StandardButton.Yes:
-            self._hc_data.pop(r)
+        u = self._users[r].get("usuario", "")
+        msg = f"¿Eliminar el usuario '{u}'?"
+        if r == 0 and len(self._users) > 1:
+            msg += "\n\nEs el usuario Principal — el siguiente pasará a serlo."
+        if QMessageBox.question(self, "Eliminar", msg) == QMessageBox.StandardButton.Yes:
+            self._users.pop(r)
             self._refresh_table()
-            self._status("HC eliminada — recuerda guardar", "#ffaa00")
+            self._persistir()
+            self._status(f"🗑 Eliminado '{u}'  ·  guardado en config.json", "#f59e0b")
 
     def _probar_url(self):
         import webbrowser
-        url = self.txt_url.text().strip()
-        if url:
-            webbrowser.open(url)
-        else:
-            QMessageBox.warning(self, "Error", "Ingresa una URL primero.")
+        webbrowser.open(INPEC_URL_FIJA)
+
+    # ---------- compatibilidad con MainWindow._save_all ----------
+    def save_main_cred(self):
+        self._persistir()
+
+    def _save_hc(self):
+        self._persistir()
 
 
 class _CredDialog(QDialog):
     def __init__(self, parent=None, data=None):
         super().__init__(parent)
-        self.setWindowTitle("Credencial HC")
-        self.setMinimumWidth(420)
+        self.setWindowTitle("Usuario INPEC360 — Navegador")
+        self.setMinimumWidth(440)
         self.setStyleSheet(DARK_STYLE)
         d = data or {}
         lay = QVBoxLayout(self)
+
+        info = QLabel(
+            "Cada usuario corresponde a un navegador para descargas en paralelo.\n"
+            f"• Verificación: <b>{INPEC_VERIF_FIJO}</b>  (automática)\n"
+            f"• URL: <code>{INPEC_URL_FIJA}</code>  (automática)"
+        )
+        info.setStyleSheet("color:#8888cc; font-size:11px; padding:4px;")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
         form = QFormLayout()
         self.txt_u = QLineEdit(d.get("usuario", ""))
+        self.txt_u.setPlaceholderText("Ej: PGRANADOS")
         self.txt_p = QLineEdit(d.get("contrasena", ""))
         self.txt_p.setEchoMode(QLineEdit.EchoMode.Password)
-        self.txt_v = QLineEdit(d.get("numero_verificacion", ""))
-        self.txt_url = QLineEdit(d.get("url", "https://sisipec.salud360.app/Inpec360/servlet/ingreso"))
+        self.txt_p.setPlaceholderText("Contraseña del usuario")
+
+        rp = QHBoxLayout()
+        rp.addWidget(self.txt_p)
+        btn_show = QPushButton("Mostrar")
+        btn_show.setFixedWidth(72)
+        def _toggle():
+            if self.txt_p.echoMode() == QLineEdit.EchoMode.Password:
+                self.txt_p.setEchoMode(QLineEdit.EchoMode.Normal); btn_show.setText("Ocultar")
+            else:
+                self.txt_p.setEchoMode(QLineEdit.EchoMode.Password); btn_show.setText("Mostrar")
+        btn_show.clicked.connect(_toggle)
+        rp.addWidget(btn_show)
+        wp = QWidget(); wp.setLayout(rp)
+
         form.addRow("Usuario:", self.txt_u)
-        form.addRow("Contrasena:", self.txt_p)
-        form.addRow("Verificacion:", self.txt_v)
-        form.addRow("URL:", self.txt_url)
+        form.addRow("Contraseña:", wp)
         lay.addLayout(form)
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Guardar")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancelar")
+        btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
 
+    def _on_accept(self):
+        if not self.txt_u.text().strip():
+            QMessageBox.warning(self, "Falta usuario", "El usuario no puede estar vacío.")
+            return
+        if not self.txt_p.text():
+            QMessageBox.warning(self, "Falta contraseña", "La contraseña no puede estar vacía.")
+            return
+        self.accept()
+
     def get_data(self):
         return {
-            "usuario": self.txt_u.text().strip().upper(),
+            "usuario":    self.txt_u.text().strip().upper(),
             "contrasena": self.txt_p.text(),
-            "numero_verificacion": self.txt_v.text().strip(),
-            "url": self.txt_url.text().strip(),
         }
 
 
@@ -348,9 +428,6 @@ class NavegadoresTab(QWidget):
         self.cmb.addItems(["chrome", "edge"])
         self.cmb.setToolTip("Selecciona el navegador instalado en este equipo")
         fl.addRow("Navegador:", self.cmb)
-        self.chk_headless = QCheckBox("Modo silencioso (sin ventana visible)")
-        self.chk_headless.setToolTip("Headless: el bot trabaja sin mostrar el navegador. Mas rapido.")
-        fl.addRow("", self.chk_headless)
 
         grp_cant = QGroupBox(f"Cantidad de Navegadores Paralelos  (max {MAX_BROWSERS})")
         main.addWidget(grp_cant)
@@ -397,15 +474,9 @@ class NavegadoresTab(QWidget):
         self.lbl_req.setWordWrap(True)
         vl2.addWidget(self.lbl_req)
 
-        grp_adv = QGroupBox("Opciones Avanzadas")
+        grp_adv = QGroupBox("Carpeta de Descargas")
         main.addWidget(grp_adv)
         fl2 = QFormLayout(grp_adv)
-        self.spn_timeout = QSpinBox()
-        self.spn_timeout.setMinimum(10)
-        self.spn_timeout.setMaximum(120)
-        self.spn_timeout.setValue(30)
-        self.spn_timeout.setSuffix(" seg")
-        fl2.addRow("Timeout elementos:", self.spn_timeout)
 
         self.txt_dl = QLineEdit()
         self.txt_dl.setReadOnly(True)
@@ -431,6 +502,41 @@ class NavegadoresTab(QWidget):
         btn_verify = QPushButton("Verificar Navegadores Instalados")
         btn_verify.clicked.connect(self.check_browsers)
         vl3.addWidget(btn_verify)
+
+        # === Escaneo de capacidad del PC =====================================
+        grp_cap = QGroupBox("Capacidad del Equipo")
+        main.addWidget(grp_cap)
+        vl_cap = QVBoxLayout(grp_cap)
+        self.lbl_cap_info = QLabel(
+            "Pulsa el boton para escanear CPU, RAM y disco y obtener "
+            "una recomendacion del numero de navegadores en paralelo."
+        )
+        self.lbl_cap_info.setStyleSheet("color:#aaccee; font-size:11px;")
+        self.lbl_cap_info.setWordWrap(True)
+        vl_cap.addWidget(self.lbl_cap_info)
+
+        self.lbl_cap_result = QLabel("")
+        self.lbl_cap_result.setStyleSheet(
+            "font-size:12px; padding:6px; background:#16213e; "
+            "border:1px solid #444477; border-radius:6px;"
+        )
+        self.lbl_cap_result.setWordWrap(True)
+        self.lbl_cap_result.setVisible(False)
+        vl_cap.addWidget(self.lbl_cap_result)
+
+        row_cap = QHBoxLayout()
+        btn_scan = QPushButton("Escanear Capacidad del PC")
+        btn_scan.setProperty("class", "primary")
+        btn_scan.clicked.connect(self.escanear_capacidad)
+        row_cap.addWidget(btn_scan)
+        self.btn_apply_cap = QPushButton("Aplicar Recomendacion")
+        self.btn_apply_cap.setProperty("class", "success")
+        self.btn_apply_cap.setEnabled(False)
+        self.btn_apply_cap.clicked.connect(self._aplicar_recomendacion)
+        row_cap.addWidget(self.btn_apply_cap)
+        vl_cap.addLayout(row_cap)
+        self._recomendado = None
+        # =====================================================================
 
         row_save = QHBoxLayout()
         row_save.addStretch()
@@ -481,18 +587,14 @@ class NavegadoresTab(QWidget):
         self.cmb.setCurrentIndex(max(0, idx))
         cantidad = max(1, min(MAX_BROWSERS, int(nav.get("cantidad_max", 1))))
         self.sld.setValue(cantidad)
-        self.chk_headless.setChecked(bool(nav.get("headless", False)))
-        self.spn_timeout.setValue(int(nav.get("timeout", 30)))
         self.txt_dl.setText(nav.get("carpeta_descargas", ""))
         self._on_slide(cantidad)
 
     def save_config(self):
         cfg = load_main_config()
         cfg["navegadores"] = {
-            "tipo": self.cmb.currentText(),
-            "cantidad_max": self.sld.value(),
-            "headless": self.chk_headless.isChecked(),
-            "timeout": self.spn_timeout.value(),
+            "tipo":              self.cmb.currentText(),
+            "cantidad_max":      self.sld.value(),
             "carpeta_descargas": self.txt_dl.text().strip(),
         }
         save_main_config(cfg)
@@ -525,6 +627,87 @@ class NavegadoresTab(QWidget):
                 "Edge: https://www.microsoft.com/es-es/edge"
             )
 
+    # ------------------------------------------------------------------
+    # Escaneo de capacidad del PC
+    # ------------------------------------------------------------------
+    def escanear_capacidad(self):
+        """Inspecciona CPU, RAM y disco para recomendar # de navegadores."""
+        try:
+            import psutil
+        except ImportError:
+            QMessageBox.critical(
+                self, "psutil no instalado",
+                "Falta el modulo 'psutil'. Reinstala el ejecutable o ejecuta:\n"
+                "pip install psutil"
+            )
+            return
+
+        try:
+            cpu_logicos = psutil.cpu_count(logical=True) or 1
+            cpu_fisicos = psutil.cpu_count(logical=False) or cpu_logicos
+            mem = psutil.virtual_memory()
+            ram_total_gb = mem.total / (1024 ** 3)
+            ram_libre_gb = mem.available / (1024 ** 3)
+            cpu_uso = psutil.cpu_percent(interval=0.6)
+            disco = psutil.disk_usage(os.path.expanduser("~"))
+            disco_libre_gb = disco.free / (1024 ** 3)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error de escaneo", f"No se pudo leer info del sistema:\n{exc}")
+            return
+
+        # Reglas de recomendacion (Chrome/Edge consume ~600-900 MB y ~0.7 CPU
+        # por sesion en promedio mientras navega Inpec360).
+        ram_para_bot_gb = max(0.5, ram_libre_gb - 1.5)   # dejar 1.5 GB libres
+        cap_por_ram = int(ram_para_bot_gb // 1.0)        # 1 GB por navegador
+        cap_por_cpu = max(1, cpu_logicos // 2)           # 2 hilos logicos por nav
+        cap_por_load = max(1, int((100 - cpu_uso) / 25)) # CPU ya ocupada penaliza
+        recomendado = max(1, min(MAX_BROWSERS, cap_por_ram, cap_por_cpu, cap_por_load))
+
+        if disco_libre_gb < 2:
+            recomendado = 1
+            warn_disco = "  (espacio en disco bajo: solo 1 navegador)"
+        else:
+            warn_disco = ""
+
+        self._recomendado = recomendado
+        self.btn_apply_cap.setEnabled(True)
+
+        # Categoria del equipo
+        if recomendado >= 4:
+            categoria = "ALTA"
+            color = "#22cc55"
+        elif recomendado >= 2:
+            categoria = "MEDIA"
+            color = "#e0b020"
+        else:
+            categoria = "BASICA"
+            color = "#e94560"
+
+        html = (
+            f"<div style='color:{color}; font-weight:bold; font-size:13px;'>"
+            f"&#9989; Recomendado: <span style='font-size:18px;'>{recomendado}</span> "
+            f"navegador{'es' if recomendado>1 else ''} en paralelo "
+            f"&middot; Capacidad: {categoria}</div>"
+            f"<br>"
+            f"<b>CPU:</b> {cpu_logicos} nucleos logicos ({cpu_fisicos} fisicos) "
+            f"&middot; uso actual: {cpu_uso:.0f}%<br>"
+            f"<b>RAM:</b> {ram_libre_gb:.1f} GB libres / {ram_total_gb:.1f} GB totales<br>"
+            f"<b>Disco (perfil):</b> {disco_libre_gb:.1f} GB libres{warn_disco}<br>"
+            f"<br>"
+            f"<i>Cada navegador usa ~1 GB RAM y ~2 hilos logicos. "
+            f"Si el PC se siente lento, reduce a {max(1, recomendado-1)}.</i>"
+        )
+        self.lbl_cap_result.setText(html)
+        self.lbl_cap_result.setVisible(True)
+
+    def _aplicar_recomendacion(self):
+        if not self._recomendado:
+            return
+        v = max(1, min(MAX_BROWSERS, int(self._recomendado)))
+        self.sld.setValue(v)
+        self._on_slide(v)
+        self.lbl_st.setText(f"Aplicada recomendacion: {v} navegador(es). Recuerda Guardar.")
+
 
 # ===========================================================================
 # Tab: Dashboard
@@ -551,7 +734,6 @@ class DashboardTab(QWidget):
         for titulo, val, col in [
             ("Version", VERSION, "#e94560"),
             ("Estado",  "Listo", "#22cc44"),
-            ("Navegadores", "0 activos", "#e9a020"),
         ]:
             fr = QFrame()
             fr.setStyleSheet(f"background:#16213e; border:1px solid {col}; border-radius:8px; padding:4px;")
@@ -636,6 +818,69 @@ class AgendaTab(QWidget):
 
 
 # ===========================================================================
+# Worker en hilo aparte para descarga masiva HC (no bloquea la UI)
+# ===========================================================================
+class _HCWorker(QThread):
+    progress      = pyqtSignal(int, int, str, str, str)  # completed, total, detail, current_item, status
+    log_message   = pyqtSignal(str)
+    finished_ok   = pyqtSignal(bool, str)                # ok, info
+
+    def __init__(self, req, stop_event, run_hc_job_func, parent=None):
+        super().__init__(parent)
+        self._req       = req
+        self._stop      = stop_event
+        self._run_hc_job = run_hc_job_func
+
+    def stop(self):
+        try:
+            if self._stop is not None:
+                self._stop.set()
+        except Exception:
+            pass
+
+    def run(self):
+        def _cb(*args, **kwargs):
+            # El runner puede llamar de dos formas:
+            #   - progress_callback({"completed":..,"total":..,...})  (dict posicional)
+            #   - progress_callback(completed=..., total=..., ...)    (kwargs)
+            data = {}
+            if args and isinstance(args[0], dict):
+                data = dict(args[0])
+            data.update(kwargs)
+            try:
+                completed    = int(data.get("completed") or 0)
+                total        = int(data.get("total") or 0)
+                detail       = str(data.get("detail") or "")
+                current_item = str(data.get("current_item") or "")
+                status       = str(data.get("status") or "running")
+                self.progress.emit(completed, total, detail, current_item, status)
+            except Exception as ex:
+                # Loguear para que no se pierda silenciosamente
+                try:
+                    self.log_message.emit(f"[CB ERR] {ex} :: data={data}")
+                except Exception:
+                    pass
+
+        try:
+            self.log_message.emit("[BOT] Iniciando motor de descarga...")
+            resultado = self._run_hc_job(self._req, stop_event=self._stop, progress_callback=_cb)
+            info = ""
+            try:
+                if isinstance(resultado, dict):
+                    info = (f"Procesados: {resultado.get('procesados', '?')} | "
+                            f"Exitosos: {resultado.get('exitosos', '?')} | "
+                            f"Fallidos: {resultado.get('fallidos', '?')}")
+                else:
+                    info = str(resultado or "")
+            except Exception:
+                info = ""
+            self.finished_ok.emit(True, info)
+        except Exception as ex:
+            self.log_message.emit(f"[ERROR] {ex}")
+            self.finished_ok.emit(False, str(ex))
+
+
+# ===========================================================================
 # Tab: Historia Clinica
 # ===========================================================================
 class HCTab(QWidget):
@@ -643,6 +888,8 @@ class HCTab(QWidget):
         super().__init__(parent)
         self._ids: List[str] = []
         self._rows: List[dict] = []   # filas completas con fechas por paciente
+        self._worker: Optional[_HCWorker] = None
+        self._stop_event = None
         self._build_ui()
 
     def _build_ui(self):
@@ -699,21 +946,80 @@ class HCTab(QWidget):
         vmas.addLayout(hf)
 
         # Tabla de IDs
-        self.tabla = QTableWidget(0, 5)
-        self.tabla.setHorizontalHeaderLabels(["#", "ID / Documento", "Fecha Inicio", "Fecha Fin", "Estado"])
-        self.tabla.horizontalHeader().setStretchLastSection(True)
+        self.tabla = QTableWidget(0, 7)
+        self.tabla.setHorizontalHeaderLabels(["#", "ID / Documento", "Servicio", "Fecha Inicio", "Fecha Fin", "Estado", "Acción"])
+        self.tabla.horizontalHeader().setStretchLastSection(False)
         self.tabla.setColumnWidth(0, 40)
-        self.tabla.setColumnWidth(1, 150)
-        self.tabla.setColumnWidth(2, 100)
-        self.tabla.setColumnWidth(3, 100)
+        self.tabla.setColumnWidth(1, 130)
+        self.tabla.setColumnWidth(2, 200)
+        self.tabla.setColumnWidth(3, 95)
+        self.tabla.setColumnWidth(4, 95)
+        self.tabla.setColumnWidth(5, 180)
+        self.tabla.setColumnWidth(6, 80)
+        # Estado por fila para contadores fiables (no dependen del texto):
+        # valores posibles: 'pendiente', 'con_soporte', 'sin_hc', 'fallido'
+        self._row_status: list = []
         self.tabla.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.tabla.setAlternatingRowColors(True)
+        # Scroll vertical SIEMPRE visible y desactivar auto-scroll para que el
+        # usuario pueda revisar la lista mientras se procesa.
+        self.tabla.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.tabla.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tabla.setAutoScroll(False)
+        self.tabla.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.tabla.setMinimumHeight(280)
         vmas.addWidget(self.tabla)
 
         # Contador
         self.lbl_conteo = QLabel("0 pacientes cargados")
         self.lbl_conteo.setStyleSheet("color:#aaaaaa; font-size:11px;")
         vmas.addWidget(self.lbl_conteo)
+
+        # ── Dashboard de progreso (en vivo) ─────────────────────────────
+        grp_dash = QGroupBox("📊 Estado de la Descarga")
+        grp_dash.setStyleSheet("QGroupBox { color:#e6edf3; font-weight:bold; }")
+        vmas.addWidget(grp_dash)
+        from PyQt6.QtWidgets import QGridLayout
+        dash_lay = QGridLayout(grp_dash)
+        dash_lay.setHorizontalSpacing(8)
+        dash_lay.setVerticalSpacing(8)
+        self._stats_labels: dict = {}
+        cards_def = [
+            ("total",       "Total",       "#3b82f6"),
+            ("completados", "Con soporte", "#22c55e"),
+            ("sin_hc",      "Sin HC",      "#eab308"),
+            ("fallidos",    "Fallidos",    "#ef4444"),
+            ("validados",   "PDFs OK",     "#a855f7"),
+            ("restantes",   "Pendientes",  "#f59e0b"),
+            ("actual",      "Actual",      "#06b6d4"),
+        ]
+        # Distribuir en grilla 4 col (responsive: se acomoda al re-dimensionar)
+        cols = 4
+        for idx, (key, titulo, color) in enumerate(cards_def):
+            fr = QFrame()
+            fr.setStyleSheet(
+                f"background:#0d1117; border:1px solid {color}; border-radius:8px; padding:6px;"
+            )
+            fr.setMinimumWidth(110)
+            fr.setMinimumHeight(70)
+            fr.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            v = QVBoxLayout(fr)
+            v.setContentsMargins(4, 4, 4, 4)
+            v.setSpacing(2)
+            lv = QLabel("0" if key != "actual" else "—")
+            lv.setStyleSheet(f"color:{color}; font-size:16px; font-weight:bold;")
+            lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lv.setWordWrap(True)
+            lt = QLabel(titulo)
+            lt.setStyleSheet("color:#a0a0b0; font-size:10px;")
+            lt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            v.addWidget(lv); v.addWidget(lt)
+            self._stats_labels[key] = lv
+            r, c = divmod(idx, cols)
+            dash_lay.addWidget(fr, r, c)
+        # Hacer que las columnas se expandan equitativamente
+        for c in range(cols):
+            dash_lay.setColumnStretch(c, 1)
 
         # Progress bar
         self.progress = QProgressBar()
@@ -727,11 +1033,31 @@ class HCTab(QWidget):
         btn_masiva = QPushButton("Iniciar Descarga Masiva")
         btn_masiva.setProperty("class", "success")
         btn_masiva.clicked.connect(self._run_masiva)
+        self.btn_detener = QPushButton("Detener")
+        self.btn_detener.setProperty("class", "danger")
+        self.btn_detener.clicked.connect(self._detener_masiva)
+        btn_validar = QPushButton("🔍 Validar PDFs descargados")
+        btn_validar.setToolTip(
+            "Escanea la carpeta de descargas y verifica que cada PDF tenga "
+            "contenido y que la fecha/servicio coincidan con lo esperado."
+        )
+        btn_validar.clicked.connect(self._validar_descargas)
         btn_limpiar = QPushButton("Limpiar Lista")
         btn_limpiar.clicked.connect(self._limpiar)
         btn_open2 = QPushButton("Abrir Carpeta")
         btn_open2.clicked.connect(self._open)
-        rb_mas.addWidget(btn_masiva); rb_mas.addWidget(btn_limpiar); rb_mas.addWidget(btn_open2)
+        # Botón "Mantener equipo despierto" (anti-bloqueo Windows)
+        self.btn_keep_awake = QPushButton("☕ Mantener PC despierta")
+        self.btn_keep_awake.setCheckable(True)
+        self.btn_keep_awake.setToolTip(
+            "Evita que Windows entre en suspensión, apague la pantalla o se "
+            "bloquee mientras el bot está corriendo. Click para activar / desactivar."
+        )
+        self.btn_keep_awake.toggled.connect(self._toggle_keep_awake)
+        rb_mas.addWidget(btn_masiva); rb_mas.addWidget(self.btn_detener)
+        rb_mas.addWidget(btn_validar)
+        rb_mas.addWidget(btn_limpiar); rb_mas.addWidget(btn_open2)
+        rb_mas.addWidget(self.btn_keep_awake)
         vmas.addLayout(rb_mas)
 
         # Log
@@ -803,6 +1129,7 @@ class HCTab(QWidget):
             col_srv  = _find_col("SERVICIO")
             col_est  = _find_col("ESTRATEGIA")
             col_fac  = _find_col("NUMERO DE FACTURA", "NUMERO_FACTURA", "FACTURA", "NRO_FACTURA")
+            col_ing  = _find_col("NUMERO DE INGRESO", "NUMERO INGRESO", "NUMERO_INGRESO", "NRO INGRESO", "NRO_INGRESO", "INGRESO")
 
             tiene_fechas = bool(col_fi and col_ff)
             if tiene_fechas:
@@ -810,33 +1137,56 @@ class HCTab(QWidget):
             else:
                 self.log.append(f"[INFO] El Excel no tiene columnas de fecha — ingresa el rango global arriba")
 
-            # Construir lista de filas (sin duplicar IDs, preservar primera ocurrencia)
+            # Construir lista de filas. Deduplica por la combinacion
+            # (cedula + servicio + fecha_inicio + fecha_fin) para que una misma
+            # CC con varios servicios o varios rangos NO se pierda.
             seen = set()
             rows = []
             for _, row in df.iterrows():
                 id_val = str(row[col]).strip() if row[col] == row[col] else ""
-                if not id_val or id_val.lower() in ("nan", "none", "") or id_val in seen:
+                if not id_val or id_val.lower() in ("nan", "none", ""):
                     continue
-                seen.add(id_val)
+                fi_val  = str(row[col_fi]).strip()  if col_fi  and row[col_fi]  == row[col_fi]  else ""
+                ff_val  = str(row[col_ff]).strip()  if col_ff  and row[col_ff]  == row[col_ff]  else ""
+                srv_val = str(row[col_srv]).strip() if col_srv and row[col_srv] == row[col_srv] else ""
+                est_val = str(row[col_est]).strip() if col_est and row[col_est] == row[col_est] else ""
+                fac_val = str(row[col_fac]).strip() if col_fac and row[col_fac] == row[col_fac] else ""
+                ing_val = str(row[col_ing]).strip() if col_ing and row[col_ing] == row[col_ing] else ""
+                if ing_val.endswith(".0"):
+                    ing_val = ing_val[:-2]
+                if ing_val.lower() in ("nan", "none"):
+                    ing_val = ""
+
+                clave = (id_val, srv_val.upper(), fi_val, ff_val, fac_val.upper())
+                if clave in seen:
+                    continue
+                seen.add(clave)
                 rows.append({
                     "id":           id_val,
-                    "fecha_inicio": str(row[col_fi]).strip()  if col_fi  and row[col_fi]  == row[col_fi]  else "",
-                    "fecha_fin":    str(row[col_ff]).strip()  if col_ff  and row[col_ff]  == row[col_ff]  else "",
-                    "servicio":     str(row[col_srv]).strip() if col_srv and row[col_srv] == row[col_srv] else "",
-                    "estrategia":   str(row[col_est]).strip() if col_est and row[col_est] == row[col_est] else "",
-                    "factura":      str(row[col_fac]).strip() if col_fac and row[col_fac] == row[col_fac] else "",
+                    "fecha_inicio": fi_val,
+                    "fecha_fin":    ff_val,
+                    "servicio":     srv_val,
+                    "estrategia":   est_val,
+                    "factura":      fac_val,
+                    "ingreso":      ing_val,
                 })
 
             self._rows = rows
             self._ids  = [r["id"] for r in rows]
+            self._row_status = ["pendiente"] * len(rows)
 
             self.tabla.setRowCount(len(rows))
             for i, r in enumerate(rows):
                 self.tabla.setItem(i, 0, QTableWidgetItem(str(i + 1)))
                 self.tabla.setItem(i, 1, QTableWidgetItem(r["id"]))
-                self.tabla.setItem(i, 2, QTableWidgetItem(r["fecha_inicio"] or "—"))
-                self.tabla.setItem(i, 3, QTableWidgetItem(r["fecha_fin"]    or "—"))
-                self.tabla.setItem(i, 4, QTableWidgetItem("Pendiente"))
+                self.tabla.setItem(i, 2, QTableWidgetItem(r["servicio"]      or "—"))
+                self.tabla.setItem(i, 3, QTableWidgetItem(r["fecha_inicio"] or "—"))
+                self.tabla.setItem(i, 4, QTableWidgetItem(r["fecha_fin"]    or "—"))
+                self.tabla.setItem(i, 5, QTableWidgetItem("Pendiente"))
+                # Si ya hay un PDF descargado para esa CC en la carpeta destino,
+                # mostrar el boton Ver desde el inicio.
+                if self._buscar_pdf_de_fila(r["id"], r.get("servicio") or ""):
+                    self._set_boton_ver(i, r["id"], r.get("servicio") or "")
 
             self.progress.setMaximum(len(rows))
             self.progress.setValue(0)
@@ -869,39 +1219,455 @@ class HCTab(QWidget):
             QMessageBox.warning(self, "Sin datos", "Primero carga un archivo con IDs de pacientes.")
             return
 
+        # Worker ya activo
+        if getattr(self, "_worker", None) and self._worker.isRunning():
+            QMessageBox.information(self, "En ejecución",
+                "Ya hay una descarga masiva en curso. Espera a que termine o usa Detener.")
+            return
+
         fi_global = self.txt_fi.text().strip()
         ff_global = self.txt_ff.text().strip()
 
-        # Verificar si las filas tienen fechas propias
         tiene_fechas_excel = any(r["fecha_inicio"] and r["fecha_fin"] for r in self._rows)
-
-        # Si ninguna fila trae fechas Y el usuario no ingresó el rango global → error
         if not tiene_fechas_excel and (not fi_global or not ff_global):
             QMessageBox.warning(self, "Fechas requeridas",
                 "El archivo no contiene columnas FECHA INICIO / FECHA FIN.\n"
                 "Ingresa el rango de fechas global arriba.")
             return
 
-        self.log.append(f"[INICIO] Descarga masiva: {len(self._rows)} pacientes")
-        if tiene_fechas_excel:
-            self.log.append("[INFO] Usando fechas individuales del Excel por paciente")
-        else:
-            self.log.append(f"[INFO] Usando rango global: {fi_global} → {ff_global}")
+        # Cargar runner del orquestador
+        try:
+            from agenda_app.bot.runner import run_hc_job
+            from agenda_app.domain.requests import HCRequest
+        except Exception as ex:
+            QMessageBox.critical(self, "Error de importación",
+                f"No se pudo cargar el motor del bot:\n{ex}")
+            return
 
+        # Construir lista de pacientes en formato esperado por el runner
+        # IMPORTANTE: las claves DEBEN coincidir con las que lee runner.py
+        # (fecha_inicio, fecha_fin, numero_factura) o el bot ignorara las
+        # fechas por paciente y usara las del UI global.
+        pacientes = []
+        for r in self._rows:
+            f_ini = r["fecha_inicio"] or fi_global
+            f_fin = r["fecha_fin"] or ff_global
+            factura = r["factura"] or ""
+            ingreso = r.get("ingreso") or ""
+            pacientes.append({
+                "cedula":              r["id"],
+                "servicio":            r["servicio"]    or "",
+                "estrategia":          r["estrategia"]  or "RECIENTE",
+                "fecha_inicio":        f_ini,
+                "fecha_fin":           f_fin,
+                "numero_factura":      factura,
+                "numero_ingreso":      ingreso,
+                # Compatibilidad con codigos legacy que aun lean estas claves:
+                "FECHA INICIO":        f_ini,
+                "FECHA FIN":           f_fin,
+                "NUMERO DE FACTURA":   factura,
+                "NUMERO DE INGRESO":   ingreso,
+            })
+
+        try:
+            req = HCRequest(
+                cedula="",
+                fecha_inicio=fi_global or "",
+                fecha_fin=ff_global or "",
+                servicio="Todos",
+                estrategia="RECIENTE",
+                ruta_descarga="",
+                pacientes_excel=pacientes,
+            )
+        except Exception as ex:
+            QMessageBox.critical(self, "Error", f"No se pudo construir la petición:\n{ex}")
+            return
+
+        # Reset estado UI + dashboard
+        self._row_status = ["pendiente"] * len(self._rows)
+        for i in range(len(self._rows)):
+            self.tabla.setItem(i, 5, QTableWidgetItem("Pendiente"))
+            # Limpiar boton Ver previo
+            self.tabla.removeCellWidget(i, 6)
+        total = len(self._rows)
         self.progress.setValue(0)
-        self.progress.setMaximum(len(self._rows))
-        for i, row in enumerate(self._rows):
-            fi = row["fecha_inicio"] or fi_global
-            ff = row["fecha_fin"]    or ff_global
-            self.tabla.setItem(i, 4, QTableWidgetItem("En cola..."))
-            self.log.append(f"[{i+1}/{len(self._rows)}] Paciente {row['id']} | {fi} → {ff}")
-            self.progress.setValue(i + 1)
-        self.log.append("[NOTA] Conectar cada item con bot_engine.Bot para ejecucion real.")
+        self.progress.setMaximum(total)
+        self._stats_labels["total"].setText(str(total))
+        self._stats_labels["completados"].setText("0")
+        self._stats_labels["fallidos"].setText("0")
+        self._stats_labels["validados"].setText("0")
+        self._stats_labels["restantes"].setText(str(total))
+        self._stats_labels["actual"].setText("—")
+        self.log.append(f"[INICIO] Descarga masiva: {total} pacientes")
+
+        # Lanzar worker
+        self._stop_event = __import__("threading").Event()
+        self._worker = _HCWorker(req, self._stop_event, run_hc_job)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.log_message.connect(lambda msg: self.log.append(msg))
+        self._worker.finished_ok.connect(self._on_finished)
+        # Auto-activar 'Mantener PC despierta' al iniciar la descarga masiva
+        try:
+            if hasattr(self, "btn_keep_awake") and not self.btn_keep_awake.isChecked():
+                self.btn_keep_awake.setChecked(True)
+        except Exception:
+            pass
+        self._worker.start()
+
+    def _parse_current_item(self, current_item: str):
+        """current_item viene como 'CC <cedula> - <SERVICIO>'. Retorna (cedula, servicio)."""
+        s = (current_item or "").strip()
+        if not s:
+            return "", ""
+        if s.upper().startswith("CC "):
+            s = s[3:].strip()
+        if " - " in s:
+            ced, srv = s.split(" - ", 1)
+            return ced.strip(), srv.strip()
+        return s, ""
+
+    def _carpeta_descargas_actual(self) -> str:
+        """Devuelve la carpeta donde el runner guarda los lotes HC_MASIVA_*."""
+        try:
+            with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            base = str((cfg.get("navegadores") or {}).get("carpeta_descargas", "")).strip()
+        except Exception:
+            base = ""
+        if base and Path(base).exists():
+            return base
+        # Fallback: carpeta downloads junto al exe
+        fallback = _DATA_DIR / "downloads"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return str(fallback)
+
+    def _buscar_pdf_de_fila(self, cedula: str, servicio: str):
+        """Busca recursivamente un PDF cuyo nombre empiece por <CC>_."""
+        try:
+            base = self._carpeta_descargas_actual()
+            if not base or not Path(base).exists():
+                return None
+            cc = str(cedula).strip()
+            if not cc:
+                return None
+            # Priorizar el lote mas reciente (HC_MASIVA_*)
+            lotes = sorted(
+                [d for d in Path(base).iterdir() if d.is_dir() and d.name.startswith("HC_MASIVA_")],
+                key=lambda d: d.stat().st_mtime, reverse=True,
+            )
+            busquedas = lotes + [Path(base)]
+            for raiz in busquedas:
+                for pdf in raiz.rglob(f"{cc}_*.pdf"):
+                    return str(pdf)
+            return None
+        except Exception:
+            return None
+
+    def _abrir_pdf_fila(self, cedula: str, servicio: str):
+        ruta = self._buscar_pdf_de_fila(cedula, servicio)
+        if not ruta:
+            QMessageBox.information(self, "PDF no encontrado",
+                f"No se encontro un PDF descargado para CC={cedula}.\n"
+                f"Es posible que aun no se haya guardado o que la carpeta de "
+                f"descargas haya cambiado.")
+            return
+        try:
+            os.startfile(ruta)  # type: ignore[attr-defined]
+        except Exception as ex:
+            QMessageBox.warning(self, "No se pudo abrir", f"{ruta}\n\n{ex}")
+
+    def _set_boton_ver(self, fila_idx: int, cedula: str, servicio: str):
+        btn = QPushButton("📄 Ver")
+        btn.setToolTip(f"Abrir PDF descargado de CC {cedula}")
+        btn.clicked.connect(lambda _=False, c=cedula, s=servicio: self._abrir_pdf_fila(c, s))
+        self.tabla.setCellWidget(fila_idx, 6, btn)
+
+    def _on_progress(self, completed, total, detail, current_item, status):
+        # Parsear current_item "CC <cedula> - <SERVICIO>"
+        cedula_evt, servicio_evt = self._parse_current_item(current_item)
+        estado_lower = (status or "").strip().lower()
+        detalle_lower = (detail or "").lower()
+
+        # Clasificar el resultado del evento en 3 estados claros:
+        #   - 'con_soporte' : descarga exitosa con PDF guardado
+        #   - 'sin_hc'      : el paciente no tiene HC en el rango (resultado de negocio)
+        #   - 'fallido'     : error tecnico
+        es_sin_hc = any(k in detalle_lower for k in (
+            "sin hc", "sin registros", "no encontr", "no hay resultados",
+            "sin resultados", "no tiene hc",
+        ))
+        es_con_soporte = (
+            estado_lower in ("ok", "success", "exitoso", "descargado", "completado", "completed")
+            or any(k in detalle_lower for k in (
+                "descargado correctamente", "tiene hc y ya estaba", "exito",
+                "archivo organizado", "guardado",
+            ))
+        ) and not es_sin_hc
+        es_fallo = (
+            not es_con_soporte and not es_sin_hc and (
+                estado_lower in ("error", "fallido", "failed", "fail")
+                or any(k in detalle_lower for k in ("error", "fall", "rechazado"))
+            )
+        )
+
+        # Buscar fila correspondiente: id == cedula y (servicio coincide o vacio)
+        fila_match = -1
+        if cedula_evt:
+            srv_norm = servicio_evt.upper().strip()
+            for i, r in enumerate(self._rows):
+                if r["id"] != cedula_evt:
+                    continue
+                r_srv = (r.get("servicio") or "").upper().strip()
+                if not srv_norm or not r_srv or srv_norm == r_srv or srv_norm in r_srv or r_srv in srv_norm:
+                    fila_match = i
+                    break
+
+        if fila_match >= 0:
+            if es_con_soporte:
+                item = QTableWidgetItem("✅ CON SOPORTE")
+                item.setForeground(Qt.GlobalColor.green)
+                if fila_match < len(self._row_status):
+                    self._row_status[fila_match] = "con_soporte"
+                self._set_boton_ver(fila_match, cedula_evt, servicio_evt)
+            elif es_sin_hc:
+                item = QTableWidgetItem("⚠ SIN HC")
+                item.setForeground(Qt.GlobalColor.yellow)
+                if fila_match < len(self._row_status):
+                    self._row_status[fila_match] = "sin_hc"
+            elif es_fallo:
+                item = QTableWidgetItem(f"❌ {(detail or status or 'ERROR').strip()[:60]}")
+                item.setForeground(Qt.GlobalColor.red)
+                if fila_match < len(self._row_status):
+                    self._row_status[fila_match] = "fallido"
+            else:
+                # Evento intermedio "Procesando..." - solo actualizar texto sin cambiar status
+                txt = (detail or status or "Procesando...").strip()[:80]
+                item = QTableWidgetItem(txt)
+                item.setForeground(Qt.GlobalColor.cyan)
+            self.tabla.setItem(fila_match, 5, item)
+            # NO hacer scrollToItem: respetar el scroll manual del usuario.
+
+        if cedula_evt:
+            self._stats_labels["actual"].setText(cedula_evt)
+
+        # Barra de progreso
+        if total and total > 0:
+            self.progress.setMaximum(total)
+            self.progress.setValue(completed)
+
+        # Contadores con base en _row_status (fiable)
+        ok = sum(1 for s in self._row_status if s == "con_soporte")
+        sinhc = sum(1 for s in self._row_status if s == "sin_hc")
+        falli = sum(1 for s in self._row_status if s == "fallido")
+        pend = sum(1 for s in self._row_status if s == "pendiente")
+        self._stats_labels["completados"].setText(str(ok))
+        self._stats_labels["fallidos"].setText(str(falli))
+        if "sin_hc" in self._stats_labels:
+            self._stats_labels["sin_hc"].setText(str(sinhc))
+        self._stats_labels["restantes"].setText(str(pend))
+
+    def _on_finished(self, ok, info):
+        self._stats_labels["actual"].setText("—")
+        # Liberar el bloqueo de suspensión al terminar
+        try:
+            if hasattr(self, "btn_keep_awake") and self.btn_keep_awake.isChecked():
+                self.btn_keep_awake.setChecked(False)
+        except Exception:
+            pass
+        if ok:
+            self.log.append(f"[FIN] Descarga masiva completada: {info}")
+            QMessageBox.information(self, "Completado",
+                f"Descarga masiva finalizada.\n{info}\n\n"
+                "Pulsa '🔍 Validar PDFs descargados' para verificar "
+                "contenido / fechas / servicio de cada PDF.")
+        else:
+            self.log.append(f"[FIN] Descarga masiva con errores: {info}")
+            QMessageBox.warning(self, "Finalizado con errores",
+                f"La descarga terminó con problemas:\n{info}")
+
+    def _detener_masiva(self):
+        if not self._worker or not self._worker.isRunning():
+            QMessageBox.information(self, "Sin proceso", "No hay descarga masiva en curso.")
+            return
+        self.log.append("[STOP] Solicitando detener (terminará tras paciente actual)...")
+        try:
+            self._worker.stop()
+        except Exception as ex:
+            self.log.append(f"[STOP] Error señalando detener: {ex}")
 
     def _open(self):
         d = _ROOT_DIR / "downloads" / "hc"
         d.mkdir(parents=True, exist_ok=True)
         os.startfile(str(d))
+
+    # ------------------------------------------------------------------
+    # Mantener PC despierta (anti-bloqueo de Windows durante descarga)
+    # ------------------------------------------------------------------
+    def _toggle_keep_awake(self, activo: bool):
+        """Activa/desactiva el modo 'no dormir' usando Windows SetThreadExecutionState.
+        Mientras está activo, Windows no entrará en suspensión, no apagará la
+        pantalla y no bloqueará la sesión por inactividad.
+        """
+        try:
+            import ctypes
+            ES_CONTINUOUS       = 0x80000000
+            ES_SYSTEM_REQUIRED  = 0x00000001
+            ES_DISPLAY_REQUIRED = 0x00000002
+            ES_AWAYMODE_REQUIRED= 0x00000040
+            if activo:
+                # Mantener sistema + pantalla activos
+                flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED | ES_AWAYMODE_REQUIRED
+                rc = ctypes.windll.kernel32.SetThreadExecutionState(flags)
+                if rc == 0:
+                    self.log.append("[KEEP-AWAKE] No se pudo activar (API devolvio 0).")
+                    self.btn_keep_awake.setChecked(False)
+                    return
+                self.btn_keep_awake.setText("☀ PC despierta (ACTIVO)")
+                self.btn_keep_awake.setStyleSheet("background:#16a34a; color:white; font-weight:bold;")
+                self.log.append("[KEEP-AWAKE] Activado. Windows no se suspendera durante la descarga.")
+            else:
+                ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+                self.btn_keep_awake.setText("☕ Mantener PC despierta")
+                self.btn_keep_awake.setStyleSheet("")
+                self.log.append("[KEEP-AWAKE] Desactivado.")
+        except Exception as ex:
+            self.log.append(f"[KEEP-AWAKE] Error: {ex}")
+            try:
+                self.btn_keep_awake.setChecked(False)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Validación de PDFs ya descargados (sin conectar al bot)
+    # ------------------------------------------------------------------
+    def _validar_descargas(self):
+        """Escanea downloads/hc y verifica cada PDF contra los datos cargados:
+        - Que el PDF no esté vacío (mínimo de bytes y de texto)
+        - Que la fecha extraída esté en el rango fi/ff del paciente
+        - Que el servicio del PDF coincida con el esperado
+        """
+        if not self._rows:
+            QMessageBox.warning(self, "Sin datos",
+                "Primero carga el archivo de pacientes para saber qué validar.")
+            return
+
+        # Extraer texto con PyMuPDF
+        try:
+            import fitz  # PyMuPDF
+        except Exception as ex:
+            QMessageBox.critical(self, "Falta dependencia",
+                f"No se pudo cargar PyMuPDF (fitz):\n{ex}")
+            return
+
+        import glob, re
+        from datetime import datetime
+
+        base_dl = _ROOT_DIR / "downloads" / "hc"
+        if not base_dl.exists():
+            QMessageBox.information(self, "Sin descargas",
+                f"No existe la carpeta de descargas:\n{base_dl}")
+            return
+
+        PDF_MIN_BYTES = 5 * 1024
+        PDF_MIN_TEXTO = 80
+
+        def _parse_fecha(txt):
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+                try:
+                    return datetime.strptime(txt.strip(), fmt)
+                except Exception:
+                    pass
+            return None
+
+        def _normalizar(s):
+            return re.sub(r"\s+", " ", (s or "").upper().strip())
+
+        validados = 0
+        invalidos = 0
+        sin_archivo = 0
+        self.log.append("")
+        self.log.append("[VALIDAR] Escaneando PDFs descargados...")
+
+        for i, r in enumerate(self._rows):
+            cedula   = str(r["id"]).strip()
+            servicio = _normalizar(r["servicio"])
+            fi_txt   = r["fecha_inicio"] or self.txt_fi.text().strip()
+            ff_txt   = r["fecha_fin"]    or self.txt_ff.text().strip()
+            fi = _parse_fecha(fi_txt) if fi_txt else None
+            ff = _parse_fecha(ff_txt) if ff_txt else None
+
+            # Buscar PDFs del paciente en cualquier subcarpeta
+            patrones = [
+                str(base_dl / "**" / f"{cedula}*.pdf"),
+                str(base_dl / "**" / f"*{cedula}*.pdf"),
+            ]
+            archivos = []
+            for pat in patrones:
+                archivos.extend(glob.glob(pat, recursive=True))
+            archivos = list({a for a in archivos})
+
+            if not archivos:
+                sin_archivo += 1
+                item = QTableWidgetItem("⚠ Sin PDF descargado")
+                item.setForeground(Qt.GlobalColor.yellow)
+                self.tabla.setItem(i, 5, item)
+                continue
+
+            # Validar el más reciente
+            archivo = max(archivos, key=lambda a: os.path.getmtime(a))
+            problemas = []
+            try:
+                tam = os.path.getsize(archivo)
+                if tam < PDF_MIN_BYTES:
+                    problemas.append(f"PDF muy pequeño ({tam}B)")
+                with fitz.open(archivo) as doc:
+                    texto = "\n".join(p.get_text() for p in doc)
+                texto_norm = _normalizar(texto)
+                if len(texto_norm) < PDF_MIN_TEXTO:
+                    problemas.append("PDF sin texto / vacío")
+                # Servicio
+                if servicio and servicio not in texto_norm:
+                    # tolerar primera palabra
+                    primera = servicio.split()[0] if servicio else ""
+                    if primera and primera not in texto_norm:
+                        problemas.append(f"servicio '{r['servicio']}' no coincide")
+                # Fecha en el texto
+                if fi and ff:
+                    fechas = re.findall(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", texto)
+                    parsed = [d for d in (_parse_fecha(f) for f in fechas) if d]
+                    if parsed:
+                        if not any(fi <= d <= ff for d in parsed):
+                            problemas.append(
+                                f"sin fecha en rango {fi.strftime('%d/%m/%Y')}—"
+                                f"{ff.strftime('%d/%m/%Y')}"
+                            )
+            except Exception as ex:
+                problemas.append(f"error abriendo PDF: {ex}")
+
+            if problemas:
+                invalidos += 1
+                item = QTableWidgetItem("❌ " + "; ".join(problemas)[:80])
+                item.setForeground(Qt.GlobalColor.red)
+                item.setToolTip(archivo + "\n" + "\n".join(problemas))
+                self.tabla.setItem(i, 5, item)
+            else:
+                validados += 1
+                item = QTableWidgetItem("✅ PDF válido")
+                item.setForeground(Qt.GlobalColor.green)
+                item.setToolTip(archivo)
+                self.tabla.setItem(i, 5, item)
+
+        self._stats_labels["validados"].setText(str(validados))
+        self.log.append(
+            f"[VALIDAR] OK={validados}  FALLAS={invalidos}  SIN_PDF={sin_archivo}"
+        )
+        QMessageBox.information(self, "Validación completada",
+            f"✅ PDFs válidos:    {validados}\n"
+            f"❌ PDFs con fallas: {invalidos}\n"
+            f"⚠  Sin PDF:         {sin_archivo}")
 
 
 # ===========================================================================
@@ -930,16 +1696,27 @@ class MainWindow(QMainWindow):
         self.tab_dash  = DashboardTab()
         self.tab_cred  = CredencialesTab()
         self.tab_nav   = NavegadoresTab()
-        self.tab_ag    = AgendaTab()
         self.tab_hc    = HCTab()
         tabs.addTab(self.tab_dash,  "Dashboard")
         tabs.addTab(self.tab_cred,  "Credenciales")
         tabs.addTab(self.tab_nav,   "Navegadores")
-        tabs.addTab(self.tab_ag,    "Crear Agenda")
         tabs.addTab(self.tab_hc,    "Historia Clinica")
 
     def _build_menu(self):
         mb = self.menuBar()
+        # En Windows el dark style puede esconder/desactivar el menú nativo.
+        # Forzamos QMenuBar widget-based para que siempre se vea y responda.
+        try:
+            mb.setNativeMenuBar(False)
+        except Exception:
+            pass
+        mb.setStyleSheet("""
+            QMenuBar { background:#161b22; color:#e6edf3; padding:4px; }
+            QMenuBar::item { background:transparent; padding:6px 14px; }
+            QMenuBar::item:selected { background:#2f81f7; color:#ffffff; border-radius:4px; }
+            QMenu { background:#161b22; color:#e6edf3; border:1px solid #30363d; }
+            QMenu::item:selected { background:#2f81f7; color:#ffffff; }
+        """)
         ma = mb.addMenu("Archivo")
         ma.addAction("Guardar Todo", self._save_all)
         ma.addSeparator()
