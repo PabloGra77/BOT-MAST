@@ -5,6 +5,8 @@ import datetime
 import os
 import shutil
 import glob
+import tempfile
+import threading
 import requests
 import fitz  # PyMuPDF
 from selenium import webdriver
@@ -20,7 +22,7 @@ from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 from selenium.webdriver.support.ui import Select
 
-from bot360_app.common.settings import CHROME_DOWNLOAD_DIR, CONFIG_PATH, RUNTIME_LOG_DIR
+from bot_app.common.settings import CHROME_DOWNLOAD_DIR, CONFIG_PATH, RUNTIME_LOG_DIR
 
 # ====================================================================================
 # SELECTORES (IMPORTANTE: EL USUARIO DEBE ACTUALIZAR ESTOS VALORES CON EL HTML REAL)
@@ -32,37 +34,37 @@ SELECTORES = {
     "login_verificacion": (By.ID, "vEMPNUMVER"),
     "login_btn": (By.NAME, "BTNINGRESAR"),
 
-    # NavegaciÃ³n MenÃº (Basado en textos visibles de la imagen)
+    # Navegación Menú (Basado en textos visibles de la imagen)
     "menu_citas": (By.XPATH, "//span[contains(text(), 'Citas') or contains(., 'Citas')] | //a[contains(text(), 'Citas') or contains(., 'Citas')]"),
     "submenu_config_agenda": (By.XPATH, "//a[contains(text(), 'Configurar Agendas') or contains(., 'Configurar Agendas')]"), # Nota: Agendas en plural
     "submenu_gen_agenda": (By.XPATH, "//a[contains(text(), 'Generar Agenda') or contains(., 'Generar Agenda')]"),
 
-    # BÃºsqueda Profesional
+    # Búsqueda Profesional
     "select_sede": (By.ID, "vSEDCOD_MPAGE"),            # Selector de sede (Master Page)
-    "input_primer_apellido": (By.ID, "vUSUPRIAPE"),      # Campo 1Â° Apellido (CORREGIDO)
-    "input_primer_nombre": (By.ID, "vUSUPRINOM"),        # Campo 1Â° Nombre (CORREGIDO)
-    "btn_buscar_prof": (By.NAME, "IMAGE1"),              # BotÃ³n lupa (CORREGIDO - es una imagen input)
+    "input_primer_apellido": (By.ID, "vUSUPRIAPE"),      # Campo 1° Apellido (CORREGIDO)
+    "input_primer_nombre": (By.ID, "vUSUPRINOM"),        # Campo 1° Nombre (CORREGIDO)
+    "btn_buscar_prof": (By.NAME, "IMAGE1"),              # Botón lupa (CORREGIDO - es una imagen input)
     "tabla_resultados": (By.CLASS_NAME, "Grid"),         # Clase tabla resultados
-    "btn_editar_agenda": (By.ID, "vVALAGE_0001"),        # BotÃ³n acciÃ³n (CAMBIADO A ID por seguridad)
+    "btn_editar_agenda": (By.ID, "vVALAGE_0001"),        # Botón acción (CAMBIADO A ID por seguridad)
 
-    # ConfiguraciÃ³n Agenda (Estructura de grilla)
+    # Configuración Agenda (Estructura de grilla)
     # Nota: Los campos terminan en _0001, _0002, etc.
-    "grid_dia": "AGEDIA",             # Prefijo ID para selector de dÃ­a
+    "grid_dia": "AGEDIA",             # Prefijo ID para selector de día
     "grid_hora_ini": "AGEHORINI",     # Prefijo ID para hora inicio
     "grid_hora_fin": "AGEHORFIN",     # Prefijo ID para hora fin
-    "grid_duracion": "AGEDUR",        # Prefijo ID para duraciÃ³n
+    "grid_duracion": "AGEDUR",        # Prefijo ID para duración
     "grid_cupos": "AGEESPHOR",        # Prefijo ID para cupos
     
-    "btn_guardar_config": (By.NAME, "BTN_ENTER"),          # BotÃ³n Confirmar
+    "btn_guardar_config": (By.NAME, "BTN_ENTER"),          # Botón Confirmar
 
-    # GeneraciÃ³n Agenda (ACTUALIZADO CON DATOS REALES)
+    # Generación Agenda (ACTUALIZADO CON DATOS REALES)
     "input_fecha_ini": (By.ID, "vFECINI"),               # ID real encontrado en escaneo
     "input_fecha_fin": (By.ID, "vFECFIN"),               # ID real encontrado en escaneo
     "select_profesional_gen": (By.ID, "vUSUCOD"),        # ID real encontrado en escaneo
     "btn_generar_final": (By.NAME, "BUTTON1"),           # ID/Name real encontrado en escaneo
-    "msg_exito": (By.CLASS_NAME, "SuccessMessage"),      # Elemento mensaje Ã©xito
+    "msg_exito": (By.CLASS_NAME, "SuccessMessage"),      # Elemento mensaje éxito
 
-    # Descarga Historias ClÃ­nicas
+    # Descarga Historias Clínicas
     "menu_consultar_hc": (By.XPATH, "//span[contains(text(), 'Consultar HC') or contains(., 'Consultar HC')] | //a[contains(text(), 'Consultar HC') or contains(., 'Consultar HC')]"),
     "submenu_consultar_historia": (By.XPATH, "//a[contains(text(), 'Consultar Historia') or contains(., 'Consultar Historia')]"),
     "hc_fecha_ini": (By.ID, "vFECINI"), # CORREGIDO: Inicio es vFECINI
@@ -70,7 +72,7 @@ SELECTORES = {
     "hc_pac_id": (By.ID, "vPACNUMIDE"),
     "hc_servicio": (By.ID, "vTIPAGENRO"), # Selector de Servicio
     "hc_btn_consultar": (By.NAME, "CONSULTAR"),
-    "hc_btn_imprimir": (By.NAME, "vIMPRIMIRHC_0001"),    # BotÃ³n de impresora primera fila
+    "hc_btn_imprimir": (By.NAME, "vIMPRIMIRHC_0001"),    # Botón de impresora primera fila
     "hc_tabla_resultados": (By.ID, "GridContainerTbl")   # Contenedor de la tabla
 }
 
@@ -78,9 +80,9 @@ import unicodedata
 
 def normalize_text(text):
     """
-    Normaliza un texto para comparaciÃ³n robusta:
-    - Convierte a mayÃºsculas
-    - Elimina tildes y diacrÃ­ticos
+    Normaliza un texto para comparación robusta:
+    - Convierte a mayúsculas
+    - Elimina tildes y diacríticos
     - Elimina espacios extra
     """
     if not text: return ""
@@ -89,6 +91,15 @@ def normalize_text(text):
     return " ".join(text.split())
 
 class Bot:
+    # Lock de clase para SERIALIZAR el arranque de drivers entre navegadores
+    # paralelos. Evita la carrera de `ChromeDriverManager().install()` cuando
+    # varios hilos crean su navegador a la vez (causa de "pedi 5 pero solo
+    # abrieron 2-3"). El driver queda cacheado tras la primera instalacion.
+    _DRIVER_INIT_LOCK = threading.Lock()
+    # Cache del path del driver ya instalado (por tipo de navegador) para no
+    # reinstalar en cada navegador.
+    _DRIVER_PATH_CACHE = {}
+
     def _verificar_navegador_operativo_o_error(self, motivo=""):
         """
         Verifica si el navegador está operativo. Si no, lanza una excepción clara para logs y control de errores.
@@ -120,6 +131,26 @@ class Bot:
         # Tamaño mínimo válido (en bytes) para considerar un PDF "no vacío"
         self.PDF_MIN_BYTES = 5 * 1024  # 5 KB
         self.PDF_MIN_TEXTO = 80         # caracteres mínimos extraíbles
+        # --- Timeouts de descarga de HC (segundos) ---
+        # Espera del boton imprimir tras "Consultar". Si no aparece y la tabla
+        # esta vacia -> se reporta "sin registros" rapido (evita demoras cuando
+        # NO hay nada por descargar).
+        self.HC_RESULTADOS_TIMEOUT = 8
+        # Espera normal de la descarga del PDF tras el click en la impresora.
+        self.HC_DESCARGA_TIMEOUT = 20
+        # Tope cuando hay una descarga LENTA en curso (.crdownload): 360 a veces
+        # se queda "cargando"; mientras el navegador siga bajando el archivo se
+        # espera hasta este tope antes de darlo por fallido.
+        self.HC_DESCARGA_HARD_CAP = 120
+        # Evento de parada externo (lo setea el runner antes de cada llamada).
+        # Si el bot detecta que esta seteado, aborta loops largos rapidamente.
+        self.stop_event = None
+
+    def _detener_solicitado(self):
+        try:
+            return bool(self.stop_event is not None and self.stop_event.is_set())
+        except Exception:
+            return False
 
     def log(self, message):
         """Imprime mensaje en consola y llama al callback si existe."""
@@ -143,7 +174,7 @@ class Bot:
             tag = elemento.tag_name
             eid = elemento.get_attribute('id')
             
-            # 2. Scroll al elemento (JS) - Solo si es necesario (OptimizaciÃ³n)
+            # 2. Scroll al elemento (JS) - Solo si es necesario (Optimización)
             # self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", elemento)
             
             # 3. Resaltado (Borde Rojo)
@@ -152,7 +183,7 @@ class Bot:
             """
             self.driver.execute_script(js_script, elemento)
             
-            # 4. Pausa mÃ­nima (ELIMINADA PARA VELOCIDAD EXTREMA)
+            # 4. Pausa mínima (ELIMINADA PARA VELOCIDAD EXTREMA)
             # time.sleep(0.1)
             
         except Exception as e:
@@ -160,7 +191,7 @@ class Bot:
 
     def ingresar_hora(self, elemento, hora):
         """
-        Ingresa una hora en un campo, manejando posibles mÃ¡scaras.
+        Ingresa una hora en un campo, manejando posibles máscaras.
         Limpia el campo agresivamente antes de escribir.
         """
         try:
@@ -171,20 +202,20 @@ class Bot:
             elemento.clear()
             
             # 2. Escribir
-            # Algunos campos con mÃ¡scara fallan si se envÃ­an los dos puntos rÃ¡pido
+            # Algunos campos con máscara fallan si se envían los dos puntos rápido
             # Probamos enviando normal primero
             elemento.send_keys(hora)
             
-            # VerificaciÃ³n bÃ¡sica
+            # Verificación básica
             val = elemento.get_attribute('value')
             if val != hora:
                 self.log(f"[WARN] La hora escrita '{val}' difiere de la deseada '{hora}'. Reintentando sin ':'...")
-                # Intento 2: Sin dos puntos (por si es mÃ¡scara estricta)
+                # Intento 2: Sin dos puntos (por si es máscara estricta)
                 hora_sin_puntos = hora.replace(":", "")
                 elemento.clear()
                 elemento.send_keys(hora_sin_puntos)
         except Exception as e:
-            self.log(f"[ERROR] FallÃ³ al ingresar hora {hora}: {e}")
+            self.log(f"[ERROR] Falló al ingresar hora {hora}: {e}")
 
     # Diccionario de alias / abreviaciones de servicios para el dropdown
     # NOTA: Por decision del usuario el matching es ESTRICTO EXACTO. Este
@@ -256,7 +287,7 @@ class Bot:
             return False
 
     def prueba_visual_inicial(self):
-        """Dibuja un borde gigante en toda la pÃ¡gina para verificar control JS."""
+        """Dibuja un borde gigante en toda la página para verificar control JS."""
         try:
             self.log("[VISUAL] Ejecutando prueba de control visual en el BODY...")
             self.driver.execute_script("document.body.style.border = '20px solid red';")
@@ -268,10 +299,10 @@ class Bot:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
-            self.log("[INFO] ConfiguraciÃ³n cargada correctamente.")
+            self.log("[INFO] Configuración cargada correctamente.")
         except FileNotFoundError:
-            self.log(f"[ERROR] No se encontrÃ³ el archivo {path}")
-            raise Exception(f"No se encontrÃ³ el archivo de configuraciÃ³n: {path}")
+            self.log(f"[ERROR] No se encontró el archivo {path}")
+            raise Exception(f"No se encontró el archivo de configuración: {path}")
 
     def iniciar_navegador(self, download_dir=None):
         browser = self.browser_name if self.browser_name in ("chrome", "edge") else "chrome"
@@ -325,23 +356,43 @@ class Bot:
             options.add_argument("--disable-infobars")
             options.page_load_strategy = 'eager'
 
-            if browser == "chrome":
-                try:
-                    service = Service(ChromeDriverManager().install())
-                    self.driver = webdriver.Chrome(service=service, options=options)
-                except Exception as ex_drv:
-                    self.log(f"[WARN] webdriver_manager Chrome no disponible ({ex_drv}). Intentando Selenium Manager/local driver...")
-                    self.driver = webdriver.Chrome(options=options)
-            else:
-                try:
-                    service = EdgeService(EdgeChromiumDriverManager().install())
-                    self.driver = webdriver.Edge(service=service, options=options)
-                except Exception as ex_drv:
-                    self.log(f"[WARN] webdriver_manager Edge no disponible ({ex_drv}). Intentando Selenium Manager/local driver...")
-                    self.driver = webdriver.Edge(options=options)
+            # Perfil AISLADO por navegador: cada instancia usa su propia carpeta
+            # de datos para que varios navegadores en paralelo no se pisen entre
+            # si (causa de inestabilidad al abrir 3+ navegadores a la vez).
+            try:
+                self._user_data_dir = tempfile.mkdtemp(prefix="bot_profile_")
+                options.add_argument(f"--user-data-dir={self._user_data_dir}")
+            except Exception:
+                self._user_data_dir = None
+
+            # Arranque SERIALIZADO entre hilos: la instalacion/resolucion del
+            # driver (webdriver_manager) no es segura en paralelo. Con el lock,
+            # solo un navegador resuelve el driver a la vez; el path queda
+            # cacheado para los siguientes (arranque estable de 5+ navegadores).
+            with Bot._DRIVER_INIT_LOCK:
+                if browser == "chrome":
+                    try:
+                        path = Bot._DRIVER_PATH_CACHE.get("chrome")
+                        if not path:
+                            path = ChromeDriverManager().install()
+                            Bot._DRIVER_PATH_CACHE["chrome"] = path
+                        self.driver = webdriver.Chrome(service=Service(path), options=options)
+                    except Exception as ex_drv:
+                        self.log(f"[WARN] webdriver_manager Chrome no disponible ({ex_drv}). Intentando Selenium Manager/local driver...")
+                        self.driver = webdriver.Chrome(options=options)
+                else:
+                    try:
+                        path = Bot._DRIVER_PATH_CACHE.get("edge")
+                        if not path:
+                            path = EdgeChromiumDriverManager().install()
+                            Bot._DRIVER_PATH_CACHE["edge"] = path
+                        self.driver = webdriver.Edge(service=EdgeService(path), options=options)
+                    except Exception as ex_drv:
+                        self.log(f"[WARN] webdriver_manager Edge no disponible ({ex_drv}). Intentando Selenium Manager/local driver...")
+                        self.driver = webdriver.Edge(options=options)
 
         self.wait = WebDriverWait(self.driver, 5)  # Reducido a 5s para maxima agresividad
-        self.driver.implicitly_wait(0) # Asegurar que no haya esperas implÃ­citas ocultas
+        self.driver.implicitly_wait(0) # Asegurar que no haya esperas implícitas ocultas
         
         # Prueba visual inmediata (Omitida en turbo)
         if not self.turbo_mode:
@@ -355,6 +406,13 @@ class Bot:
         except Exception as e:
             self.log(f"[WARN] Error al cerrar driver: {e}")
         finally:
+            # Limpiar el perfil temporal aislado de este navegador.
+            try:
+                _udd = getattr(self, "_user_data_dir", None)
+                if _udd and os.path.isdir(_udd):
+                    shutil.rmtree(_udd, ignore_errors=True)
+            except Exception:
+                pass
             self.exportar_resumen()
 
     def login(self):
@@ -382,37 +440,55 @@ class Bot:
             el_user.clear()
             el_user.send_keys(user)
 
-            # Ingresar contraseÃ±a
+            # Ingresar contraseña
             el_pass = self.driver.find_element(*SELECTORES["login_password"])
             self.resaltar_elemento(el_pass)
             el_pass.clear()
             el_pass.send_keys(pwd)
 
-            # Ingresar nÃºmero de verificaciÃ³n (si existe en la pÃ¡gina)
+            # Ingresar número de verificación (si existe en la página)
             try:
                 el_verif = self.driver.find_element(*SELECTORES["login_verificacion"])
                 if el_verif.is_displayed():
                     self.resaltar_elemento(el_verif)
-                    self.log("[INFO] Ingresando nÃºmero de verificaciÃ³n...")
+                    self.log("[INFO] Ingresando número de verificación...")
                     el_verif.clear()
                     el_verif.send_keys(verif)
             except NoSuchElementException:
-                pass # Si no estÃ¡ el campo, seguimos
+                pass # Si no está el campo, seguimos
 
             # Click Ingresar
             btn_login = self.driver.find_element(*SELECTORES["login_btn"])
             self.resaltar_elemento(btn_login)
             btn_login.click()
             
-            # VerificaciÃ³n simple: esperar a que desaparezca el login o aparezca menÃº
-            # AquÃ­ asumimos que si aparece el menÃº de citas, el login fue exitoso
-            self.wait.until(EC.presence_of_element_located(SELECTORES["menu_citas"]))
-            self.log("[OK] Inicio de sesiÃ³n exitoso.")
-            self.resumen_acciones.append("Inicio de sesiÃ³n: OK")
+            # Verificación de login FLEXIBLE: el login es exitoso si aparece
+            # CUALQUIER modulo del menu (Citas o Consultar HC) o si el formulario
+            # de login ya desaparecio. Esto soporta usuarios que SOLO tienen el
+            # modulo de Historia Clinica (sin menu "Citas"), que antes fallaban
+            # el login porque se exigia especificamente el menu de Citas.
+            def _login_completado(driver):
+                try:
+                    if driver.find_elements(*SELECTORES["menu_citas"]):
+                        return True
+                    if driver.find_elements(*SELECTORES["menu_consultar_hc"]):
+                        return True
+                    # Si ya no esta el campo de usuario, salimos del login.
+                    if not driver.find_elements(*SELECTORES["login_usuario"]):
+                        return True
+                    return False
+                except Exception:
+                    return False
+
+            self.wait.until(_login_completado)
+            if self.driver.find_elements(*SELECTORES["menu_consultar_hc"]) and not self.driver.find_elements(*SELECTORES["menu_citas"]):
+                self.log("[OK] Inicio de sesión exitoso (usuario con modulo de Historia Clinica).")
+            else:
+                self.log("[OK] Inicio de sesión exitoso.")
+            self.resumen_acciones.append("Inicio de sesión: OK")
 
         except TimeoutException:
-            self.log("[ERROR] No se pudo iniciar sesiÃ³n. Verifique selectores o credenciales.")
-            self.driver.save_screenshot("error_login.png")
+            self.log("[ERROR] No se pudo iniciar sesión. Verifique selectores o credenciales.")
             raise
 
     def _es_pantalla_login(self):
@@ -536,7 +612,7 @@ class Bot:
                 "tiempo de espera de la puerta de enlace",
                 "servicio no disponible",
                 "la pagina web no esta disponible",
-                "la pÃ¡gina web no estÃ¡ disponible",
+                "la página web no está disponible",
             ]
             universo = "\n".join([url, titulo, body_txt[:4000], html_txt[:8000]])
             if any(e in universo for e in errores):
@@ -633,27 +709,27 @@ class Bot:
 
     def navegar_a_modulo(self, selector_menu, selector_submenu, forzar_menu=True):
         try:
-            # OptimizaciÃ³n: Si forzar_menu es False, asumimos que el menÃº ya estÃ¡ desplegado
-            # y vamos directo al submenÃº.
+            # Optimización: Si forzar_menu es False, asumimos que el menú ya está desplegado
+            # y vamos directo al submenú.
             
             if forzar_menu:
-                # Click en menÃº principal (ej: Citas)
+                # Click en menú principal (ej: Citas)
                 menu = self.wait.until(EC.element_to_be_clickable(selector_menu))
                 if not self.turbo_mode: self.resaltar_elemento(menu)
                 menu.click()
             else:
-                self.log("[INFO] MenÃº principal omitido (asumimos ya abierto).")
+                self.log("[INFO] Menú principal omitido (asumimos ya abierto).")
             
-            # Click en submenÃº (ej: Configurar Agenda)
+            # Click en submenú (ej: Configurar Agenda)
             submenu = self.wait.until(EC.element_to_be_clickable(selector_submenu))
             if not self.turbo_mode: self.resaltar_elemento(submenu)
             submenu.click()
-            self.log("[INFO] NavegaciÃ³n a mÃ³dulo completada.")
+            self.log("[INFO] Navegación a módulo completada.")
         except Exception as e:
-            self.log(f"[ERROR] Fallo en navegaciÃ³n: {e}")
-            # Retry mechanism: Si fallÃ³ directo al submenÃº, intentamos el flujo completo
+            self.log(f"[ERROR] Fallo en navegación: {e}")
+            # Retry mechanism: Si falló directo al submenú, intentamos el flujo completo
             if not forzar_menu:
-                self.log("[WARN] Reintentando navegaciÃ³n abriendo el menÃº principal...")
+                self.log("[WARN] Reintentando navegación abriendo el menú principal...")
                 self.navegar_a_modulo(selector_menu, selector_submenu, forzar_menu=True)
             else:
                 raise
@@ -661,7 +737,7 @@ class Bot:
     def buscar_elemento_en_frames(self, by, value):
         """
         Busca un elemento en el contexto actual y en todos los sub-frames.
-        Optimizado: Recuerda el Ãºltimo frame exitoso para buscar allÃ­ primero.
+        Optimizado: Recuerda el último frame exitoso para buscar allí primero.
         """
         self._recuperar_si_pagina_error(f"busqueda de elemento {by}={value}")
 
@@ -669,7 +745,7 @@ class Bot:
         if not hasattr(self, '_last_successful_frame_index'):
             self._last_successful_frame_index = None
 
-        # 1. Si tenemos un frame exitoso previo, vamos directo allÃ¡ primero (OptimizaciÃ³n predictiva)
+        # 1. Si tenemos un frame exitoso previo, vamos directo allá primero (Optimización predictiva)
         if self._last_successful_frame_index is not None:
              try:
                 frames = self.driver.find_elements(By.TAG_NAME, "iframe") + self.driver.find_elements(By.TAG_NAME, "frame")
@@ -680,7 +756,7 @@ class Bot:
                         if el.is_displayed():
                             return el
                     except: pass
-                    self.driver.switch_to.default_content() # Si fallÃ³, volvemos a cero
+                    self.driver.switch_to.default_content() # Si falló, volvemos a cero
              except: 
                  self.driver.switch_to.default_content()
 
@@ -691,13 +767,13 @@ class Bot:
                 return el
         except: pass
 
-        # 3. Buscar en iframes/frames (Barrido completo si fallÃ³ la predicciÃ³n)
+        # 3. Buscar en iframes/frames (Barrido completo si falló la predicción)
         frames = self.driver.find_elements(By.TAG_NAME, "iframe") + self.driver.find_elements(By.TAG_NAME, "frame")
         
-        # OptimizaciÃ³n: Probar primero el Ãºltimo frame exitoso
+        # Optimización: Probar primero el último frame exitoso
         order_to_check = list(range(len(frames)))
         if self._last_successful_frame_index is not None and self._last_successful_frame_index < len(frames):
-            # Movemos el Ã­ndice ganador al principio de la lista
+            # Movemos el índice ganador al principio de la lista
             order_to_check.remove(self._last_successful_frame_index)
             order_to_check.insert(0, self._last_successful_frame_index)
 
@@ -708,11 +784,11 @@ class Bot:
                 self.driver.switch_to.frame(frames[i])
                 # self.log(f"[FRAME] Entrando al frame {i}...") # Comentado para reducir ruido en log
                 
-                # BÃºsqueda recursiva (simple por ahora, solo 1 nivel de profundidad extra)
+                # Búsqueda recursiva (simple por ahora, solo 1 nivel de profundidad extra)
                 try:
                     el = self.driver.find_element(by, value)
                     if el.is_displayed():
-                        self.log(f"[FRAME] Â¡Elemento encontrado en frame {i}!")
+                        self.log(f"[FRAME] ¡Elemento encontrado en frame {i}!")
                         self._last_successful_frame_index = i # Guardamos el ganador
                         return el
                 except: pass
@@ -730,28 +806,24 @@ class Bot:
     def diagnostico_exhaustivo(self):
         """
         Recorre todos los frames y guarda su contenido HTML.
-        TambiÃ©n lista elementos interactivos visibles para ayudar a encontrar el botÃ³n.
+        También lista elementos interactivos visibles para ayudar a encontrar el botón.
         """
-        self.log("[DIAGNÃ“STICO] Iniciando escaneo profundo de la pÃ¡gina...")
-        
+        self.log("[DIAGNÓSTICO] Iniciando escaneo profundo de la página...")
+
         try:
-            # 1. Dump contexto principal
-            with open("debug_main.html", "w", encoding="utf-8") as f:
-                f.write(self.driver.page_source)
-            
-            # 2. Recorrer frames
+            # Footprint minimo: NO se vuelca HTML a disco (antes creaba
+            # debug_main.html / debug_frame_*.html). El diagnostico se reporta
+            # solo por el log de la app.
+
+            # Recorrer frames
             frames = self.driver.find_elements(By.TAG_NAME, "iframe") + self.driver.find_elements(By.TAG_NAME, "frame")
-            self.log(f"[DIAGNÃ“STICO] Se detectaron {len(frames)} frames/iframes.")
-            
+            self.log(f"[DIAGNÓSTICO] Se detectaron {len(frames)} frames/iframes.")
+
             for i, frame in enumerate(frames):
                 try:
                     self.driver.switch_to.frame(frame)
                     self.log(f"--- FRAME {i} ---")
-                    
-                    # Guardar HTML
-                    with open(f"debug_frame_{i}.html", "w", encoding="utf-8") as f:
-                        f.write(self.driver.page_source)
-                    
+
                     # Listar elementos interesantes
                     elementos = self.driver.find_elements(By.XPATH, "//*[self::a or self::button or self::input]")
                     visibles = [e for e in elementos if e.is_displayed()]
@@ -774,10 +846,10 @@ class Bot:
                     self.driver.switch_to.default_content()
                     
             self.driver.switch_to.default_content()
-            self.log("[DIAGNÃ“STICO] Escaneo finalizado. Revisa los archivos debug_*.html")
+            self.log("[DIAGNÓSTICO] Escaneo finalizado.")
             
         except Exception as e:
-            self.log(f"[DIAGNÃ“STICO] FallÃ³ el proceso de diagnÃ³stico: {e}")
+            self.log(f"[DIAGNÓSTICO] Falló el proceso de diagnóstico: {e}")
 
     def buscar_profesional(self):
         # Nota: Usamos get con valores por defecto para evitar KeyError si falta alguna clave
@@ -789,29 +861,29 @@ class Bot:
         self.log(f"[INFO] Buscando profesional: {apellido} {nombre}")
 
         try:
-            # --- MANEJO DE FRAMES PARA EL MÃ“DULO ---
-            # A veces el contenido carga en un frame especÃ­fico. Intentamos ubicarlo.
-            # Buscamos algo distintivo de la pantalla de bÃºsqueda, ej: el input de apellido
+            # --- MANEJO DE FRAMES PARA EL MÓDULO ---
+            # A veces el contenido carga en un frame específico. Intentamos ubicarlo.
+            # Buscamos algo distintivo de la pantalla de búsqueda, ej: el input de apellido
             el_test = self.buscar_elemento_en_frames(*SELECTORES["input_primer_apellido"])
             if not el_test:
-                self.log("[WARN] No se detectÃ³ el formulario en ningÃºn frame. Intentando seguir en default...")
+                self.log("[WARN] No se detectó el formulario en ningún frame. Intentando seguir en default...")
             
-            # 1. SELECCIONAR SEDE PRIMERO (CRÃTICO: El profesional suele depender de la sede)
+            # 1. SELECCIONAR SEDE PRIMERO (CRÍTICO: El profesional suele depender de la sede)
             if sede_texto:
                 self.log(f"[INFO] Seleccionando sede: {sede_texto}")
                 try:
                     el_select = self.wait.until(EC.visibility_of_element_located(SELECTORES["select_sede"]))
                     select_obj = Select(el_select)
                     
-                    # Verificar si ya estÃ¡ seleccionada para no recargar innecesariamente
+                    # Verificar si ya está seleccionada para no recargar innecesariamente
                     opcion_actual = select_obj.first_selected_option.text.strip()
                     if sede_texto not in opcion_actual:
                         self.resaltar_elemento(el_select)
-                        # Intento flexible de selecciÃ³n
+                        # Intento flexible de selección
                         try:
                             select_obj.select_by_visible_text(sede_texto)
                         except:
-                            # BÃºsqueda parcial si falla exacto
+                            # Búsqueda parcial si falla exacto
                             for op in select_obj.options:
                                 if sede_texto in op.text:
                                     select_obj.select_by_visible_text(op.text)
@@ -819,19 +891,19 @@ class Bot:
                         
                         self.log("[INFO] Sede cambiada, esperando recarga...")
                         
-                        # OptimizaciÃ³n: Esperar staleness en lugar de sleep fijo
-                        # Si el elemento input apellido existe, esperamos a que desaparezca (si la pÃ¡gina recarga)
+                        # Optimización: Esperar staleness en lugar de sleep fijo
+                        # Si el elemento input apellido existe, esperamos a que desaparezca (si la página recarga)
                         # O simplemente esperamos un breve momento y verificamos el cambio
                         try:
-                            # Intento de detecciÃ³n de recarga ultra-rÃ¡pido (sin sleeps fijos si es posible)
+                            # Intento de detección de recarga ultra-rápido (sin sleeps fijos si es posible)
                             # Verificamos si el elemento 'el_select' se vuelve 'stale' (obsoleto)
-                            # Esto confirma que la pÃ¡gina comenzÃ³ a recargar.
+                            # Esto confirma que la página comenzó a recargar.
                             WebDriverWait(self.driver, 2).until(EC.staleness_of(el_select))
-                            self.log("[INFO] Recarga de pÃ¡gina detectada (Staleness).")
+                            self.log("[INFO] Recarga de página detectada (Staleness).")
                         except TimeoutException:
-                            self.log("[INFO] No se detectÃ³ recarga inmediata (posible AJAX), continuando...")
+                            self.log("[INFO] No se detectó recarga inmediata (posible AJAX), continuando...")
                         
-                        # RE-UBICAR FRAME DESPUÃ‰S DE RECARGA
+                        # RE-UBICAR FRAME DESPUÉS DE RECARGA
                         self.buscar_elemento_en_frames(*SELECTORES["input_primer_apellido"])
                     else:
                         self.log("[INFO] La sede correcta ya estaba seleccionada.")
@@ -855,29 +927,29 @@ class Bot:
                 el_nom.send_keys(nombre)
             except: pass # Nombre opcional a veces
 
-            # PEQUEÃ‘A PAUSA DE SEGURIDAD (Permite que el JS habilite el botÃ³n)
+            # PEQUEÑA PAUSA DE SEGURIDAD (Permite que el JS habilite el botón)
             time.sleep(0.5)
 
             # 3. CLICK EN BUSCAR
-            self.log("[INFO] Ejecutando bÃºsqueda...")
+            self.log("[INFO] Ejecutando búsqueda...")
             try:
-                # Estrategia 1: Esperar a que sea CLICKABLE (SoluciÃ³n a "antes funcionaba")
-                # Antes solo buscÃ¡bamos "presence", ahora aseguramos "interactability"
+                # Estrategia 1: Esperar a que sea CLICKABLE (Solución a "antes funcionaba")
+                # Antes solo buscábamos "presence", ahora aseguramos "interactability"
                 btn = self.wait.until(EC.element_to_be_clickable(SELECTORES["btn_buscar_prof"]))
                 self.resaltar_elemento(btn)
                 btn.click()
             except Exception as e:
-                self.log(f"[WARN] FallÃ³ click normal en lupa ({e}). Intentando estrategias alternativas...")
+                self.log(f"[WARN] Falló click normal en lupa ({e}). Intentando estrategias alternativas...")
                 
-                # Estrategia 2: BÃºsqueda genÃ©rica de Input Image o Lupa
+                # Estrategia 2: Búsqueda genérica de Input Image o Lupa
                 xpath_lupa = "//input[@type='image' and (contains(@name, 'IMAGE') or contains(@src, 'search') or contains(@src, 'buscar') or contains(@src, 'lupa'))]"
                 try:
                     btn = self.driver.find_element(By.XPATH, xpath_lupa)
                     self.resaltar_elemento(btn)
                     self.driver.execute_script("arguments[0].click();", btn)
-                    self.log("[INFO] Click en lupa forzado por JS (XPath genÃ©rico).")
+                    self.log("[INFO] Click en lupa forzado por JS (XPath genérico).")
                 except:
-                    self.log("[ERROR] No se pudo encontrar ni clickear el botÃ³n de bÃºsqueda.")
+                    self.log("[ERROR] No se pudo encontrar ni clickear el botón de búsqueda.")
                     raise
 
             # Esperar resultados (observando la tabla)
@@ -888,13 +960,13 @@ class Bot:
                 self.log("[WARN] Tabla no detectada, asumiendo que ya estaba cargada o no hay resultados.")
 
             # =================================================================================
-            # PARTE CRÃTICA: BUSCAR BOTÃ“N MODIFICAR (OPTIMIZADO V3)
+            # PARTE CRÍTICA: BUSCAR BOTÓN MODIFICAR (OPTIMIZADO V3)
             # =================================================================================
-            self.log(">>> INICIANDO BÃšSQUEDA VELOZ DE BOTÃ“N MODIFICAR <<<")
+            self.log(">>> INICIANDO BÚSQUEDA VELOZ DE BOTÓN MODIFICAR <<<")
             
             boton_encontrado = None
 
-            # FASE 1: BÃºsqueda InstantÃ¡nea por ID (Lo mÃ¡s rÃ¡pido)
+            # FASE 1: Búsqueda Instantánea por ID (Lo más rápido)
             # Probamos los IDs conocidos directamente sin esperar
             ids_rapidos = ["vUPDATE_0001", "vVALAGE_0001"]
             for _id in ids_rapidos:
@@ -902,15 +974,15 @@ class Bot:
                     candidato = self.driver.find_element(By.ID, _id)
                     if candidato.is_displayed():
                         boton_encontrado = candidato
-                        self.log(f"[FAST] Â¡BotÃ³n encontrado por ID {_id}!")
+                        self.log(f"[FAST] ¡Botón encontrado por ID {_id}!")
                         break
                 except: pass
 
-            # FASE 2: Si fallÃ³ la rÃ¡pida, usamos espera inteligente (WebDriverWait)
+            # FASE 2: Si falló la rápida, usamos espera inteligente (WebDriverWait)
             if not boton_encontrado:
-                self.log("[INFO] No se encontrÃ³ por ID directo. Iniciando bÃºsqueda avanzada optimizada...")
+                self.log("[INFO] No se encontró por ID directo. Iniciando búsqueda avanzada optimizada...")
                 
-                # XPath SUPER optimizado: Busca SOLO en tags especÃ­ficos (input, img, a)
+                # XPath SUPER optimizado: Busca SOLO en tags específicos (input, img, a)
                 # Evita recorrer todo el DOM con //*
                 xpath_universal = (
                     "//input["
@@ -931,22 +1003,22 @@ class Bot:
                 )
 
                 try:
-                    # BÃºsqueda ultra-rÃ¡pida (casi instantÃ¡nea)
-                    # Usamos find_elements para no lanzar excepciÃ³n y ser mÃ¡s rÃ¡pidos
+                    # Búsqueda ultra-rápida (casi instantánea)
+                    # Usamos find_elements para no lanzar excepción y ser más rápidos
                     candidatos = self.driver.find_elements(By.XPATH, xpath_universal)
                     if candidatos:
                          boton_encontrado = candidatos[0]
-                         self.log("[EXITO] BotÃ³n detectado por bÃºsqueda avanzada (instantÃ¡neo).")
+                         self.log("[EXITO] Botón detectado por búsqueda avanzada (instantáneo).")
                     else:
                          # Forzar salto inmediato a frames
                          raise TimeoutException("No encontrado en root")
                 except TimeoutException:
-                    self.log("[WARN] BÃºsqueda root fallÃ³. Saltando a frames...")
+                    self.log("[WARN] Búsqueda root falló. Saltando a frames...")
                     boton_encontrado = self.buscar_elemento_en_frames(By.XPATH, xpath_universal)
 
-            # ACCIÃ“N FINAL
+            # ACCIÓN FINAL
             if boton_encontrado:
-                self.log(f">>> Â¡OBJETIVO LOCALIZADO! ID: {boton_encontrado.get_attribute('id')} | Tag: {boton_encontrado.tag_name} <<<")
+                self.log(f">>> ¡OBJETIVO LOCALIZADO! ID: {boton_encontrado.get_attribute('id')} | Tag: {boton_encontrado.tag_name} <<<")
                 
                 # Scroll y Resaltado
                 try:
@@ -966,35 +1038,35 @@ class Bot:
                 try:
                     boton_encontrado.click()
                 except:
-                    self.log("[WARN] Click normal fallÃ³, forzando JS...")
+                    self.log("[WARN] Click normal falló, forzando JS...")
                     self.driver.execute_script("arguments[0].click();", boton_encontrado)
                 
-                self.log("[EXITO] Click enviado. Verificando cambio de pÃ¡gina...")
+                self.log("[EXITO] Click enviado. Verificando cambio de página...")
                 
-                # Espera dinÃ¡mica inteligente (mÃ¡x 5s)
+                # Espera dinámica inteligente (máx 5s)
                 start_time = time.time()
                 while time.time() - start_time < 5:
                     # 1. Chequeo de Ventanas (Prioridad alta por popups)
                     if len(self.driver.window_handles) > 1:
                         self.driver.switch_to.window(self.driver.window_handles[-1])
-                        self.log("[INFO] Cambiado a nueva pestaÃ±a/ventana.")
+                        self.log("[INFO] Cambiado a nueva pestaña/ventana.")
                         break
 
                     # 2. Chequeo de URL
                     if "agendas" in self.driver.current_url.lower():
-                        self.log("[CONFIRMADO] NavegaciÃ³n exitosa a Agendas.")
+                        self.log("[CONFIRMADO] Navegación exitosa a Agendas.")
                         break
                     
-                    time.sleep(0.2) # Polling rÃ¡pido
+                    time.sleep(0.2) # Polling rápido
                 else:
-                    self.log("[WARN] No se detectÃ³ cambio de URL/Ventana inmediato, continuando...")
+                    self.log("[WARN] No se detectó cambio de URL/Ventana inmediato, continuando...")
             else:
-                self.log("[CRITICO] AGOTADAS TODAS LAS ESTRATEGIAS. EL BOTÃ“N NO APARECE.")
+                self.log("[CRITICO] AGOTADAS TODAS LAS ESTRATEGIAS. EL BOTÓN NO APARECE.")
                 self.diagnostico_exhaustivo()
-                raise Exception("No se encontrÃ³ botÃ³n Modificar Agenda")
+                raise Exception("No se encontró botón Modificar Agenda")
 
         except Exception as e:
-            self.log(f"[ERROR] Fallo en bÃºsqueda de profesional: {e}")
+            self.log(f"[ERROR] Fallo en búsqueda de profesional: {e}")
             raise
 
 
@@ -1004,15 +1076,15 @@ class Bot:
         if not full_id: return ""
         if '_0001' in full_id:
             return full_id.split('_0001')[0]
-        # Intento genÃ©rico de quitar los Ãºltimos 5 chars si son _\d\d\d\d
+        # Intento genérico de quitar los últimos 5 chars si son _\d\d\d\d
         if len(full_id) > 5 and full_id[-5] == '_' and full_id[-4:].isdigit():
             return full_id[:-5]
         return full_id
 
     def detectar_mapeo_columnas(self):
         """
-        Intenta deducir dinÃ¡micamente quÃ© ID corresponde a cada columna de la grilla
-        basÃ¡ndose en la posiciÃ³n horizontal (X) de los elementos de la primera fila (_0001).
+        Intenta deducir dinámicamente qué ID corresponde a cada columna de la grilla
+        basándose en la posición horizontal (X) de los elementos de la primera fila (_0001).
         Optimizado: Robusto contra StaleElementReferenceException.
         """
         self.log("[AUTO-DETECT] Iniciando mapeo de columnas de la grilla...")
@@ -1023,7 +1095,7 @@ class Bot:
                 # 1. Buscar todos los inputs y selects de la fila 1
                 inputs = self.driver.find_elements(By.XPATH, "//*[contains(@id, '_0001') and (self::input or self::select)]")
                 
-                # 2. ExtracciÃ³n segura de datos (evita StaleElementReferenceException durante el sort)
+                # 2. Extracción segura de datos (evita StaleElementReferenceException durante el sort)
                 candidatos = []
                 for el in inputs:
                     try:
@@ -1037,10 +1109,10 @@ class Bot:
                     except: 
                         continue # Si el elemento muere durante el chequeo, lo ignoramos
 
-                # Ordenar por posiciÃ³n X
+                # Ordenar por posición X
                 candidatos.sort(key=lambda k: k['x'])
                 
-                # Clasificar segÃºn tipo
+                # Clasificar según tipo
                 selects = [c for c in candidatos if c['tag'] == 'select']
                 texts = [c for c in candidatos if c['tag'] == 'input' and c['type'] == 'text']
                 
@@ -1066,13 +1138,13 @@ class Bot:
                     self.log(f"   -> Servicios (Lista): {mapeo['servicios']}")
                 else:
                     self.log("[WARN] Menos selects de los esperados.")
-                    # Fallback parcial si fallÃ³ la lÃ³gica pero no hubo excepciÃ³n
+                    # Fallback parcial si falló la lógica pero no hubo excepción
                     raise Exception("Estructura de selects incompleta")
 
                 # --- MAPEO DE INPUTS TEXT ---
                 # Orden esperado: Inicio, Fin, Duracion, Espacios
                 if len(texts) >= 3:
-                    def get_prefix(full_id): # RedefiniciÃ³n local por si acaso
+                    def get_prefix(full_id): # Redefinición local por si acaso
                         if not full_id: return ""
                         if '_0001' in full_id: return full_id.split('_0001')[0]
                         return full_id
@@ -1090,13 +1162,13 @@ class Bot:
                      self.log("[WARN] Menos inputs de texto de los esperados.")
                      raise Exception("Estructura de inputs incompleta")
                     
-                return mapeo # Ã‰xito
+                return mapeo # Éxito
 
             except Exception as e:
-                self.log(f"[WARN] Intento {attempt+1} fallÃ³ en detecciÃ³n de columnas: {e}")
+                self.log(f"[WARN] Intento {attempt+1} falló en detección de columnas: {e}")
                 time.sleep(1) # Esperar a que el DOM se estabilice
 
-        self.log("[ERROR] FallÃ³ la detecciÃ³n de columnas tras reintentos. Usando FALLBACK AMPLIO.")
+        self.log("[ERROR] Falló la detección de columnas tras reintentos. Usando FALLBACK AMPLIO.")
         return {
             'dia': "AGEDIA", 'inicio': "AGEHORINI", 'fin': "AGEHORFIN",
             'duracion': "AGEDUR", 'activo': "AGEACT", 
@@ -1104,44 +1176,43 @@ class Bot:
         }
 
     def configurar_agenda(self):
-        self.log("\n[PASO 2] Configurando horarios de atenciÃ³n...")
+        self.log("\n[PASO 2] Configurando horarios de atención...")
         
         try:
             self.navegar_a_modulo(SELECTORES["menu_citas"], SELECTORES["submenu_config_agenda"])
-            # Esperar carga inicial del mÃ³dulo
+            # Esperar carga inicial del módulo
             try:
                 self.wait.until(EC.visibility_of_element_located(SELECTORES["input_primer_apellido"]))
             except TimeoutException:
-                 self.log("[WARN] Tiempo de espera agotado esperando carga de mÃ³dulo configuraciÃ³n.")
+                 self.log("[WARN] Tiempo de espera agotado esperando carga de módulo configuración.")
 
             self.buscar_profesional()
             
-            # Esperar confirmaciÃ³n de carga de la siguiente pantalla (ConfiguraciÃ³n)
+            # Esperar confirmación de carga de la siguiente pantalla (Configuración)
             self.log("[INFO] Esperando carga de pantalla de horarios...")
             try:
                 # Esperamos a que aparezca al menos un elemento que termine en _0001
                 self.wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(@id, '_0001')]")))
             except TimeoutException:
-                self.log("[ERROR] No se detectÃ³ la grilla de configuraciÃ³n.")
-                self.driver.save_screenshot("debug_grid_fail.png")
-                raise Exception("Fallo navegaciÃ³n a horarios")
+                self.log("[ERROR] No se detectó la grilla de configuración.")
+                raise Exception("Fallo navegación a horarios")
 
-            # Detectar IDs dinÃ¡micamente
+            # Detectar IDs dinámicamente
             mapa = self.detectar_mapeo_columnas()
             
-            # Obtener configuraciÃ³n
+            # Obtener configuración
             conf_agenda = self.config.get("configuracion_agenda", {})
             dias_lista = conf_agenda.get("dias_atencion", [])
             horarios_lista = conf_agenda.get("horarios", [])
             servicios_lista = conf_agenda.get("servicios", [])
             
             if not dias_lista or not horarios_lista:
-                self.log("[ERROR] Falta configuraciÃ³n de dÃ­as u horarios.")
+                self.log("[ERROR] Falta configuración de días u horarios.")
                 return
 
             idx_fila = 1
             
-            # Iteramos por cada dÃ­a y por cada horario
+            # Iteramos por cada día y por cada horario
             for dia_nombre in dias_lista:
                 for horario in horarios_lista:
                     sufijo = f"_{idx_fila:04d}"
@@ -1158,31 +1229,31 @@ class Bot:
                         try:
                             el_dia = self.driver.find_element(By.ID, id_dia)
                         except NoSuchElementException:
-                            # Si no existe, buscamos botÃ³n "MÃ¡s" o "Agregar"
-                            self.log(f"[INFO] No existe fila {idx_fila}. Buscando botÃ³n agregar...")
+                            # Si no existe, buscamos botón "Más" o "Agregar"
+                            self.log(f"[INFO] No existe fila {idx_fila}. Buscando botón agregar...")
                             try:
                                 # Buscamos imagen con 'add', 'plus', 'insert' o 'nuevo'
                                 btn_add = self.driver.find_element(By.XPATH, "//input[contains(@src, 'add') or contains(@src, 'plus') or contains(@src, 'insert') or contains(@alt, 'Agregar')]")
                                 btn_add.click()
                                 
-                                # Esperar dinÃ¡micamente a que aparezca la nueva fila
+                                # Esperar dinámicamente a que aparezca la nueva fila
                                 try:
                                     WebDriverWait(self.driver, 3).until(EC.presence_of_element_located((By.ID, id_dia)))
                                 except: pass
                                 
                                 el_dia = self.driver.find_element(By.ID, id_dia) # Reintentar
                             except:
-                                self.log("[WARN] No se pudo agregar nueva fila. Deteniendo configuraciÃ³n.")
+                                self.log("[WARN] No se pudo agregar nueva fila. Deteniendo configuración.")
                                 break
                         
                         self.resaltar_elemento(el_dia)
                         select_dia = Select(el_dia)
-                        # SelecciÃ³n de DÃ­a
+                        # Selección de Día
                         try:
                              select_dia.select_by_visible_text(dia_nombre)
                         except:
-                             # Mapeo numÃ©rico fallback
-                             mapa_dias = {"Lunes": "1", "Martes": "2", "MiÃ©rcoles": "3", "Miercoles": "3", "Jueves": "4", "Viernes": "5", "SÃ¡bado": "6", "Domingo": "7"}
+                             # Mapeo numérico fallback
+                             mapa_dias = {"Lunes": "1", "Martes": "2", "Miércoles": "3", "Miercoles": "3", "Jueves": "4", "Viernes": "5", "Sábado": "6", "Domingo": "7"}
                              select_dia.select_by_value(mapa_dias.get(dia_nombre, "1"))
 
                         # Hora Inicio
@@ -1193,7 +1264,7 @@ class Bot:
                         el_fin = self.driver.find_element(By.ID, mapa['fin'] + sufijo)
                         self.ingresar_hora(el_fin, h_fin)
                         
-                        # DuraciÃ³n
+                        # Duración
                         el_dur = self.driver.find_element(By.ID, mapa['duracion'] + sufijo)
                         el_dur.clear()
                         el_dur.send_keys(dur)
@@ -1208,7 +1279,7 @@ class Bot:
                         # Servicios (Agenda Para 1, 2, 3...)
                         if 'servicios' in mapa and mapa['servicios']:
                             for i, servicio_nombre in enumerate(servicios_lista):
-                                if i >= len(mapa['servicios']): break # No hay mÃ¡s columnas
+                                if i >= len(mapa['servicios']): break # No hay más columnas
                                 
                                 id_serv = mapa['servicios'][i] + sufijo
                                 try:
@@ -1227,9 +1298,9 @@ class Bot:
                 break 
 
             # Guardar cambios
-            self.log("[INFO] Guardando configuraciÃ³n de horarios...")
+            self.log("[INFO] Guardando configuración de horarios...")
             try:
-                 # Buscamos botÃ³n por texto "Confirmar" o "Guardar" o ID comÃºn
+                 # Buscamos botón por texto "Confirmar" o "Guardar" o ID común
                  btn_guardar = None
                  try:
                      btn_guardar = self.driver.find_element(By.NAME, "BTN_ENTER")
@@ -1240,38 +1311,38 @@ class Bot:
                      self.resaltar_elemento(btn_guardar)
                      btn_guardar.click()
                      
-                     # Esperar confirmaciÃ³n alert
+                     # Esperar confirmación alert
                      try:
                          WebDriverWait(self.driver, 5).until(EC.alert_is_present())
                          alert = self.driver.switch_to.alert
                          self.log(f"[ALERT] {alert.text}")
                          alert.accept()
                          
-                         # CRÃTICO: Esperar a que la pÃ¡gina termine de procesar antes de intentar ir a otro lado
-                         # A veces el sistema te devuelve a la pantalla anterior automÃ¡ticamente.
+                         # CRÍTICO: Esperar a que la página termine de procesar antes de intentar ir a otro lado
+                         # A veces el sistema te devuelve a la pantalla anterior automáticamente.
                          time.sleep(2) 
                      except: pass
             except Exception as e:
                  self.log(f"[WARN] No se pudo dar click en Guardar: {e}")
 
         except Exception as e:
-            self.log(f"[ERROR] FallÃ³ la configuraciÃ³n de agenda: {e}")
-            self.resumen_acciones.append("ConfiguraciÃ³n Agenda: FALLO")
+            self.log(f"[ERROR] Falló la configuración de agenda: {e}")
+            self.resumen_acciones.append("Configuración Agenda: FALLO")
             raise
 
     def calcular_proxima_fecha(self, dia_semana_str):
         """
-        Calcula la prÃ³xima fecha (dd/mm/yyyy) correspondiente al dÃ­a de la semana indicado.
-        Si hoy es ese dÃ­a, devuelve la fecha de hoy.
+        Calcula la próxima fecha (dd/mm/yyyy) correspondiente al día de la semana indicado.
+        Si hoy es ese día, devuelve la fecha de hoy.
         """
         map_dias = {
-            "lunes": 0, "martes": 1, "miÃ©rcoles": 2, "miercoles": 2,
-            "jueves": 3, "viernes": 4, "sÃ¡bado": 5, "sabado": 5, "domingo": 6
+            "lunes": 0, "martes": 1, "miércoles": 2, "miercoles": 2,
+            "jueves": 3, "viernes": 4, "sábado": 5, "sabado": 5, "domingo": 6
         }
         
         target_weekday = map_dias.get(dia_semana_str.lower())
         if target_weekday is None:
-            self.log(f"[WARN] DÃ­a desconocido '{dia_semana_str}', usando fecha de maÃ±ana por defecto.")
+            self.log(f"[WARN] Día desconocido '{dia_semana_str}', usando fecha de mañana por defecto.")
             target_weekday = (datetime.date.today().weekday() + 1) % 7
             
         today = datetime.date.today()
@@ -1285,7 +1356,7 @@ class Bot:
         return next_date.strftime("%d/%m/%Y")
 
     def generar_agenda(self):
-        self.log("\n[PASO 3] Iniciando GeneraciÃ³n de Agenda...")
+        self.log("\n[PASO 3] Iniciando Generación de Agenda...")
         
         try:
             # Intentamos cerrar cualquier alert residual
@@ -1293,10 +1364,10 @@ class Bot:
                 self.driver.switch_to.alert.accept()
             except: pass
             
-            # NavegaciÃ³n Robusta:
+            # Navegación Robusta:
             self.driver.switch_to.default_content()
             
-            # NOTA: Omitimos click en "Citas" si ya estÃ¡ abierto.
+            # NOTA: Omitimos click en "Citas" si ya está abierto.
             self.navegar_a_modulo(SELECTORES["menu_citas"], SELECTORES["submenu_gen_agenda"], forzar_menu=False)
             
             # Esperar carga del formulario
@@ -1320,12 +1391,12 @@ class Bot:
                         p.get('primer_nombre', ''),
                         p.get('segundo_nombre', '')
                     ]
-                    # Unir partes no vacÃ­as
+                    # Unir partes no vacías
                     prof_nombre = " ".join([x for x in partes_nombre if x]).strip().upper()
                     
                     self.log(f"[INFO] Buscando profesional: '{prof_nombre}'")
                     
-                    # Usamos la funciÃ³n auxiliar de selecciÃ³n inteligente
+                    # Usamos la función auxiliar de selección inteligente
                     exito_prof = self.seleccionar_servicio(select_el, prof_nombre)
                     
                     if not exito_prof:
@@ -1336,27 +1407,27 @@ class Bot:
                             self.seleccionar_servicio(select_el, prof_simple)
 
                 else:
-                    self.log("[ERROR] No se encontrÃ³ el dropdown de profesional.")
+                    self.log("[ERROR] No se encontró el dropdown de profesional.")
             except Exception as e:
-                self.log(f"[ERROR] FallÃ³ selecciÃ³n de profesional: {e}")
+                self.log(f"[ERROR] Falló selección de profesional: {e}")
 
-            # 2. Calcular Fechas DinÃ¡micas
+            # 2. Calcular Fechas Dinámicas
             dias_atencion = self.config["configuracion_agenda"]["dias_atencion"]
             if dias_atencion:
-                # Tomamos el primer dÃ­a configurado como referencia principal
+                # Tomamos el primer día configurado como referencia principal
                 dia_obj = dias_atencion[0]
                 fecha_gen = self.calcular_proxima_fecha(dia_obj)
-                self.log(f"[INFO] DÃ­a configurado: {dia_obj} -> Fecha calculada: {fecha_gen}")
+                self.log(f"[INFO] Día configurado: {dia_obj} -> Fecha calculada: {fecha_gen}")
                 f_ini = fecha_gen
                 f_fin = fecha_gen
             else:
-                # Fallback a config estÃ¡tica si no hay dÃ­as definidos
+                # Fallback a config estática si no hay días definidos
                 f_ini = self.config["generacion_agenda"]["fecha_inicio"]
                 f_fin = self.config["generacion_agenda"]["fecha_fin"]
-                self.log(f"[INFO] Usando fechas estÃ¡ticas: {f_ini} - {f_fin}")
+                self.log(f"[INFO] Usando fechas estáticas: {f_ini} - {f_fin}")
             
             # 3. Ingresar Fechas
-            # Usamos JS para asignar valores directamente y evitar problemas con mÃ¡scaras/pickers
+            # Usamos JS para asignar valores directamente y evitar problemas con máscaras/pickers
             # Buscamos los elementos con el buscador de frames por seguridad
             
             self.log("[INFO] Ingresando fecha de inicio para agenda...")
@@ -1367,7 +1438,7 @@ class Bot:
                 # Disparar eventos de cambio por si acaso
                 self.driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", input_ini)
             else:
-                self.log("[ERROR] No se encontrÃ³ campo fecha inicio")
+                self.log("[ERROR] No se encontró campo fecha inicio")
 
             self.log("[INFO] Ingresando fecha fin...")
             input_fin = self.buscar_elemento_en_frames(*SELECTORES["input_fecha_fin"])
@@ -1376,10 +1447,10 @@ class Bot:
                 self.driver.execute_script("arguments[0].value = arguments[1];", input_fin, f_fin)
                 self.driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", input_fin)
             else:
-                self.log("[ERROR] No se encontrÃ³ campo fecha fin")
+                self.log("[ERROR] No se encontró campo fecha fin")
             
             # 4. Click Generar
-            self.log("[INFO] Buscando botÃ³n Generar...")
+            self.log("[INFO] Buscando botón Generar...")
             btn_gen = self.buscar_elemento_en_frames(*SELECTORES["btn_generar_final"])
             if btn_gen:
                 self.resaltar_elemento(btn_gen)
@@ -1389,12 +1460,12 @@ class Bot:
                 except:
                     self.driver.execute_script("arguments[0].click();", btn_gen)
                 
-                self.log("[PASO FINAL] BotÃ³n Generar presionado. Proceso completado.")
+                self.log("[PASO FINAL] Botón Generar presionado. Proceso completado.")
                 
             else:
-                self.log("[ERROR] No se encontrÃ³ botÃ³n Generar Agenda")
+                self.log("[ERROR] No se encontró botón Generar Agenda")
             
-            # 5. Validar Ã©xito
+            # 5. Validar éxito
             try:
                 # Esperamos alerta o mensaje en pantalla
                 try:
@@ -1403,32 +1474,32 @@ class Bot:
                     txt = alert.text
                     self.log(f"[ALERT] {txt}")
                     alert.accept()
-                    self.resumen_acciones.append(f"GeneraciÃ³n Agenda ({f_ini}): {txt}")
+                    self.resumen_acciones.append(f"Generación Agenda ({f_ini}): {txt}")
                 except:
                     # Si no hay alerta, buscar mensaje en DOM
                     mensaje = self.wait.until(EC.visibility_of_element_located(SELECTORES["msg_exito"])).text
                     self.log(f"[EXITO] Sistema responde: {mensaje}")
-                    self.resumen_acciones.append(f"GeneraciÃ³n Agenda ({f_ini}): EXITOSO")
+                    self.resumen_acciones.append(f"Generación Agenda ({f_ini}): EXITOSO")
             except TimeoutException:
-                self.log("[WARN] No se detectÃ³ confirmaciÃ³n explÃ­cita.")
-                self.resumen_acciones.append(f"GeneraciÃ³n Agenda ({f_ini}): SIN CONFIRMACION")
+                self.log("[WARN] No se detectó confirmación explícita.")
+                self.resumen_acciones.append(f"Generación Agenda ({f_ini}): SIN CONFIRMACION")
 
         except Exception as e:
-            self.log(f"[ERROR] FallÃ³ la generaciÃ³n de agenda: {e}")
-            self.resumen_acciones.append("GeneraciÃ³n Agenda: FALLO")
+            self.log(f"[ERROR] Falló la generación de agenda: {e}")
+            self.resumen_acciones.append("Generación Agenda: FALLO")
 
     def esperar_carga_completa(self, timeout=30):
         """
-        Espera dinÃ¡micamente a que la pÃ¡gina termine de cargar recursos y peticiones AJAX.
+        Espera dinámicamente a que la página termine de cargar recursos y peticiones AJAX.
         Soporta:
         - document.readyState
         - jQuery.active (si existe)
         - Sys.WebForms.PageRequestManager (ASP.NET AJAX, si existe)
         """
         end_time = time.time() + timeout
-        self.log("[WAIT] Esperando carga completa de la pÃ¡gina/acciÃ³n...")
+        self.log("[WAIT] Esperando carga completa de la página/acción...")
         
-        # PequeÃ±a pausa inicial para dar tiempo a que se disparen eventos (ej. click -> inicio request)
+        # Pequeña pausa inicial para dar tiempo a que se disparen eventos (ej. click -> inicio request)
         time.sleep(1)
         
         while time.time() < end_time:
@@ -1448,7 +1519,7 @@ class Bot:
                     continue
                 
                 # 3. ASP.NET AJAX (Sys.WebForms)
-                # Verifica si hay un PostBack asÃ­ncrono en curso
+                # Verifica si hay un PostBack asíncrono en curso
                 asp_net_ajax = self.driver.execute_script("""
                     try {
                         if (typeof Sys !== 'undefined' && typeof Sys.WebForms !== 'undefined' && typeof Sys.WebForms.PageRequestManager !== 'undefined') {
@@ -1462,14 +1533,14 @@ class Bot:
                     time.sleep(0.5)
                     continue
                 
-                # Si pasa todas las verificaciones, la pÃ¡gina estÃ¡ "quieta"
+                # Si pasa todas las verificaciones, la página está "quieta"
                 return True
                 
             except Exception as e:
-                # Si hay error al ejecutar script (ej. navegaciÃ³n en curso), esperamos un poco
+                # Si hay error al ejecutar script (ej. navegación en curso), esperamos un poco
                 time.sleep(0.5)
         
-        self.log("[WARN] Tiempo de espera dinÃ¡mico agotado. La pÃ¡gina puede no haber terminado de cargar.")
+        self.log("[WARN] Tiempo de espera dinámico agotado. La página puede no haber terminado de cargar.")
         try:
             if self._pagina_en_blanco_o_error() or self._es_pantalla_login():
                 self.recuperar_pagina_y_sesion("timeout de carga")
@@ -1557,30 +1628,36 @@ class Bot:
         return (nombre or "GEN")[:60]
 
     def _eliminar_pdfs_duplicados_recientes(self, archivos_antes, ventana_segundos=15):
-        """Elimina cualquier PDF que aparecio en la RAIZ de download_dir
-        despues del snapshot ``archivos_antes`` y dentro de los ultimos
-        ``ventana_segundos`` segundos. Esto cubre el caso en que Chrome
-        auto-descarga el mismo PDF en paralelo a nuestra descarga via
-        requests / mover, dejando un duplicado huerfano.
-
-        Es seguro: solo borra .pdf que esten SUELTOS en la raiz, nunca toca
-        las subcarpetas de servicio. Si no hay duplicados, no hace nada.
+        """Elimina PDFs huerfanos AUTO-descargados por el navegador en la RAIZ
+        del download_dir. Es SEGURO en cualquier flujo (incluido RANGO FECHAS)
+        porque solo borra archivos cuyo nombre coincide con patrones genericos
+        del navegador (p.ej. 'RptHistoria.pdf', 'RptHistoria (1).pdf'),
+        NUNCA toca PDFs ya renombrados con prefijo de cedula '<CC>_<COD>_*.PDF'
+        ni archivos dentro de subcarpetas.
         """
         eliminados = 0
         try:
+            import re as _re
             base = getattr(self, "download_dir", None)
             if not base or not os.path.isdir(base):
                 return 0
             ahora = time.time()
             archivos_antes = set(archivos_antes or [])
+            # Patrones genericos del navegador (auto-download). Insensible a may/min.
+            patrones_navegador = _re.compile(
+                r"^(rpthistoria|reporte|report|imprimir|print)(\s*\(\d+\))?\.pdf$",
+                _re.IGNORECASE,
+            )
             for nombre in os.listdir(base):
                 ruta = os.path.join(base, nombre)
                 if not os.path.isfile(ruta):
                     continue
-                low = nombre.lower()
-                if not low.endswith(".pdf"):
+                if not nombre.lower().endswith(".pdf"):
                     continue
                 if nombre in archivos_antes:
+                    continue
+                # Solo borrar nombres que claramente vienen del navegador.
+                if not patrones_navegador.match(nombre):
                     continue
                 try:
                     edad = ahora - os.path.getmtime(ruta)
@@ -1591,9 +1668,9 @@ class Bot:
                 try:
                     os.remove(ruta)
                     eliminados += 1
-                    self.log(f"[DEDUP] Duplicado eliminado de raiz: {nombre}")
+                    self.log(f"[DEDUP] Auto-download del navegador eliminado: {nombre}")
                 except Exception as e:
-                    self.log(f"[DEDUP] No se pudo borrar duplicado {nombre}: {e}")
+                    self.log(f"[DEDUP] No se pudo borrar {nombre}: {e}")
         except Exception as e:
             self.log(f"[DEDUP] Error general: {e}")
         return eliminados
@@ -1607,15 +1684,33 @@ class Bot:
         Esto es una RED DE SEGURIDAD para PDFs que no fueron movidos por el
         flujo normal (timeouts del watcher de descarga, errores intermedios,
         archivos temporales, etc.).
+
+        IMPORTANTE (politica conservadora, multi-navegador safe):
+        - NUNCA se elimina un PDF: si es generico (RptHistoria.pdf, etc.) se
+          intenta extraer la CC y el numero de ingreso desde el contenido del
+          PDF y se mueve renombrado. Si no se logra extraer nada, se mueve a
+          ``_SIN_CLASIFICAR/`` con timestamp para no perder informacion.
+        - Si la CC extraida del PDF difiere de la CC del flujo actual, se usa
+          la CC REAL del PDF (caso comun cuando hay varios navegadores).
+        - Solo se ignoran archivos en proceso de descarga (.crdownload, .tmp,
+          .part) y archivos modificados en los ultimos 3 segundos (siguen
+          siendo escritos por el navegador).
+
         Devuelve la lista de rutas finales movidas.
         """
+        import re as _re
         movidos = []
+        _patron_generico = _re.compile(
+            r"^(rpthistoria|reporte|report|imprimir|print)(\s*\(\d+\))?\.pdf$",
+            _re.IGNORECASE,
+        )
         try:
             base = getattr(self, "download_dir", None)
             if not base or not os.path.isdir(base):
                 return movidos
-            destino_base = self._nombre_carpeta_servicio(servicio) if servicio else "_SIN_CLASIFICAR"
-            destino_dir = os.path.join(base, destino_base)
+            cc_actual = str(cedula).strip() if cedula else ""
+            ahora = time.time()
+
             for nombre in os.listdir(base):
                 ruta = os.path.join(base, nombre)
                 if not os.path.isfile(ruta):
@@ -1623,17 +1718,81 @@ class Bot:
                 low = nombre.lower()
                 if not low.endswith(".pdf"):
                     continue
-                # No mover archivos en proceso de descarga
                 if low.endswith(".crdownload") or low.endswith(".tmp") or low.endswith(".part"):
                     continue
+                # Saltar archivos que el navegador podria seguir escribiendo.
+                try:
+                    if (ahora - os.path.getmtime(ruta)) < 3:
+                        continue
+                except Exception:
+                    pass
+
+                es_generico = bool(_patron_generico.match(nombre))
+
+                # Intentar leer la cedula REAL y un numero de ingreso del PDF
+                # para reasignar correctamente (multi-navegador safe).
+                cc_real = ""
+                ingreso_real = ""
+                try:
+                    texto_pdf = self._extraer_texto_pdf(ruta, max_paginas=2)
+                    if texto_pdf:
+                        m_cc = _re.search(
+                            r"(?:CEDULA|DOCUMENTO|IDENTIFICACION|\bCC\b)[^0-9]{0,30}(\d{6,12})",
+                            texto_pdf,
+                        )
+                        if m_cc:
+                            cc_real = m_cc.group(1)
+                        elif cc_actual and _re.search(r"\b" + _re.escape(cc_actual) + r"\b", texto_pdf):
+                            cc_real = cc_actual
+                        m_ing = _re.search(
+                            r"(?:INGRESO|FACTURA|NRO\.?\s*INGRESO|N[UÚ]MERO\s+DE\s+INGRESO)[^0-9]{0,20}(\d{6,9})",
+                            texto_pdf,
+                        )
+                        if m_ing:
+                            ingreso_real = m_ing.group(1)
+                except Exception as _e_pdf:
+                    self.log(f"[BARRIDO] No se pudo leer contenido de {nombre}: {_e_pdf}")
+
+                cc_final = cc_real or cc_actual
+                if cc_real and cc_actual and cc_real != cc_actual:
+                    self.log(
+                        f"[BARRIDO][WARN] PDF {nombre} pertenece a CC={cc_real}, "
+                        f"NO a la CC actual del flujo ({cc_actual}). Se usa la real."
+                    )
+
+                # Determinar carpeta destino. Las subcarpetas finales viven
+                # en output_dir (compartido). El barrido se hace sobre la
+                # carpeta de descargas crudas del propio navegador.
+                base_destino = getattr(self, "output_dir", None) or base
+                if cc_final:
+                    destino_base = self._nombre_carpeta_servicio(servicio) if servicio else "_SIN_CLASIFICAR"
+                else:
+                    destino_base = "_SIN_CLASIFICAR"
+                destino_dir = os.path.join(base_destino, destino_base)
                 if not os.path.isdir(destino_dir):
                     os.makedirs(destino_dir, exist_ok=True)
                     self.log(f"[BARRIDO] Carpeta creada: {destino_dir}")
-                # Renombrar para evitar colisiones
-                cc = str(cedula).strip() if cedula else ""
-                base_nombre = nombre
-                if cc and cc not in base_nombre:
-                    base_nombre = f"{cc}_{nombre}"
+
+                # Construir nombre destino (formato CC_COD_INGRESO.PDF si tenemos datos)
+                try:
+                    cod_servicio = self._codigo_servicio_por_contexto(servicio, None) if servicio else ""
+                except Exception:
+                    cod_servicio = ""
+                if cc_final and cod_servicio and ingreso_real:
+                    base_nombre = f"{cc_final}_{cod_servicio}_{ingreso_real}.pdf"
+                elif cc_final and cod_servicio:
+                    base_nombre = f"{cc_final}_{cod_servicio}.pdf"
+                elif cc_final:
+                    if not nombre.upper().startswith(cc_final.upper()):
+                        base_nombre = f"{cc_final}_{nombre}"
+                    else:
+                        base_nombre = nombre
+                else:
+                    # Sin CC: conservar con prefijo timestamp para evitar perder
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    base_nombre = f"SIN_CC_{ts}_{nombre}"
+                base_nombre = base_nombre.upper()
+
                 destino_final = os.path.join(destino_dir, base_nombre)
                 contador = 1
                 stem, ext = os.path.splitext(base_nombre)
@@ -1643,7 +1802,8 @@ class Bot:
                 try:
                     shutil.move(ruta, destino_final)
                     movidos.append(destino_final)
-                    self.log(f"[BARRIDO] PDF huerfano movido: {nombre} -> {destino_final}")
+                    tag = "GENERICO->RESCATADO" if es_generico else "HUERFANO"
+                    self.log(f"[BARRIDO] {tag}: {nombre} -> {destino_final}")
                 except Exception as e:
                     self.log(f"[BARRIDO] No se pudo mover {nombre}: {e}")
         except Exception as e:
@@ -1651,7 +1811,8 @@ class Bot:
         return movidos
 
     def _mover_a_subcarpeta(self, ruta_archivo, cedula, tipo_atencion, servicio, numero_factura=None,
-                             fecha_inicio=None, fecha_fin=None, numero_ingreso=None):
+                             fecha_inicio=None, fecha_fin=None, numero_ingreso=None,
+                             permitir_duplicado_unico=False):
         """
         Organiza descargas por servicio:
         Downloads/HC_MASIVA_xxx/<SERVICIO>/<CC_SIGLA[_FACTURA]>.pdf
@@ -1685,29 +1846,39 @@ class Bot:
             cod_servicio = self._codigo_servicio_por_contexto(servicio, tipo_atencion)
             factura = self._normalizar_numero_factura(numero_factura)
             carpeta_servicio = self._nombre_carpeta_servicio(servicio)
-            carpeta_destino = os.path.join(self.download_dir, carpeta_servicio)
+            # Las subcarpetas finales se crean en output_dir (compartido entre
+            # navegadores). Si no se configuro output_dir, usar download_dir.
+            base_destino = getattr(self, "output_dir", None) or self.download_dir
+            carpeta_destino = os.path.join(base_destino, carpeta_servicio)
             if not os.path.exists(carpeta_destino):
                 os.makedirs(carpeta_destino, exist_ok=True)
                 self.log(f"[INFO] Carpeta creada: {carpeta_destino}")
 
             ingreso = self._normalizar_numero_factura(numero_ingreso)
-            # Prioridad de naming: ingreso > factura > base. (Pref. usuario: MAYUSCULA)
-            if ingreso:
-                nombre_archivo = f"{cc}_{cod_servicio}_{ingreso}.pdf".upper()
-            elif factura:
+            # Prioridad de naming: FACTURA > ingreso > base. (Pref. usuario: MAYUSCULA)
+            # El soporte SIEMPRE se renombra con el numero de factura cuando existe
+            # (estrategia RECIENTE/ANTIGUA/RANGO). El numero de ingreso solo se usa
+            # como respaldo para diferenciar HCs cuando NO hay factura (p.ej. rango).
+            if factura:
                 nombre_archivo = f"{cc}_{cod_servicio}_{factura}.pdf".upper()
+            elif ingreso:
+                nombre_archivo = f"{cc}_{cod_servicio}_{ingreso}.pdf".upper()
             else:
                 nombre_archivo = f"{cc}_{cod_servicio}.pdf".upper()
             ruta_canonica = os.path.join(carpeta_destino, nombre_archivo)
 
-            # Evitar duplicados: si ya existe ese tipo/servicio para la cédula, no guardar otro.
+            # Evitar duplicados o, si el flujo lo solicita, generar nombre unico.
             if os.path.exists(ruta_canonica):
-                try:
-                    os.remove(ruta_archivo)
-                    self.log(f"[INFO] Duplicado omitido (ya existe): {ruta_canonica}")
-                except Exception:
-                    self.log(f"[INFO] Duplicado detectado (no se pudo borrar temporal): {ruta_archivo}")
-                return ruta_canonica
+                if permitir_duplicado_unico:
+                    ruta_canonica = self._ruta_unica(carpeta_destino, nombre_archivo)
+                    self.log(f"[INFO] Nombre alternativo (RANGO FECHAS): {os.path.basename(ruta_canonica)}")
+                else:
+                    try:
+                        os.remove(ruta_archivo)
+                        self.log(f"[INFO] Duplicado omitido (ya existe): {ruta_canonica}")
+                    except Exception:
+                        self.log(f"[INFO] Duplicado detectado (no se pudo borrar temporal): {ruta_archivo}")
+                    return ruta_canonica
 
             nueva_ruta = ruta_canonica
 
@@ -1853,14 +2024,14 @@ class Bot:
 
     def detectar_tipo_atencion(self, ruta_pdf):
         """
-        Analiza el PDF para encontrar el tipo de atenciÃ³n.
+        Analiza el PDF para encontrar el tipo de atención.
         Busca: "PRIMERA VEZ", "EVOLUCION", "VALORACION".
         Retorna la primera coincidencia o "DESCONOCIDO".
         """
         try:
-            self.log(f"[INFO] Analizando PDF para tipo de atenciÃ³n: {ruta_pdf}")
+            self.log(f"[INFO] Analizando PDF para tipo de atención: {ruta_pdf}")
             doc = fitz.open(ruta_pdf)
-            # Solo analizamos la primera pÃ¡gina, suele estar ahÃ­ el encabezado
+            # Solo analizamos la primera página, suele estar ahí el encabezado
             if len(doc) > 0:
                 text = doc[0].get_text().upper()
                 text_norm = normalize_text(text)
@@ -1932,7 +2103,7 @@ class Bot:
             return ""
 
     def _extraer_numero_ingreso_de_fila(self, texto_fila):
-        """Extrae el numero de ingreso (columna 'Ingreso' de la tabla INPEC360).
+        """Extrae el numero de ingreso (columna 'Ingreso' de la tabla INPEC).
         El ingreso suele ser un entero de 6-9 digitos. Se prioriza el numero mas
         grande del rango aceptado dentro del texto de la fila para evitar confundirlo
         con la cedula u otros codigos. Devuelve string sin signos o '' si no aplica.
@@ -1941,16 +2112,24 @@ class Bot:
             import re as _re
             if not texto_fila:
                 return ""
-            tokens = _re.findall(r"\b\d{6,9}\b", str(texto_fila))
+            tokens = _re.findall(r"\b\d{5,10}\b", str(texto_fila))
             if not tokens:
+                self.log(f"[INGRESO] Sin tokens numericos en fila. Texto={str(texto_fila)[:160]!r}")
                 return ""
-            # Heuristica: el ingreso suele ser de 7-8 digitos. Tomamos el ultimo
-            # numero de 6-9 digitos que NO coincida con una cedula tipica (>=9).
+            # Heuristica: el ingreso suele ser de 6-8 digitos. Tomamos el ultimo
+            # numero de 6-8 digitos (los de 9-10 digitos suelen ser cedulas).
             candidatos = [t for t in tokens if 6 <= len(t) <= 8]
             if not candidatos:
+                # Fallback: si solo hay numeros largos (cedulas), tomar el ultimo
+                # numero corto encontrado o el ultimo de cualquier tamano.
+                candidatos = [t for t in tokens if len(t) <= 8]
+            if not candidatos:
+                self.log(f"[INGRESO] Sin candidatos validos. Tokens={tokens} Texto={str(texto_fila)[:160]!r}")
                 return ""
-            return candidatos[-1]
-        except Exception:
+            elegido = candidatos[-1]
+            return elegido
+        except Exception as _e:
+            self.log(f"[INGRESO] Error extrayendo: {_e}")
             return ""
 
     def _normalizar_fecha_ddmmyyyy(self, valor):
@@ -1995,12 +2174,25 @@ class Bot:
         if verif != fecha_texto:
             self.log(f"[WARN] {label_log}: valor final '{verif}' distinto a '{fecha_texto}'")
 
-    def _esperar_archivo_descargado(self, archivos_antes, timeout=30):
+    def _esperar_archivo_descargado(self, archivos_antes, timeout=30, hard_cap=None):
+        """Espera a que aparezca un PDF nuevo en download_dir.
+
+        Es consciente de descargas EN CURSO: si Chrome tiene un archivo temporal
+        (.crdownload/.tmp/.part) bajando, sigue esperando hasta `hard_cap` aunque
+        se supere `timeout`. Esto evita abandonar descargas lentas cuando 360 se
+        queda "cargando". Si no hay descarga en curso y se agota `timeout`, sale.
+        """
         if not hasattr(self, 'download_dir'):
             return None
 
+        if hard_cap is None:
+            hard_cap = max(timeout, getattr(self, "HC_DESCARGA_HARD_CAP", 120))
+        en_progreso = (".crdownload", ".tmp", ".part")
+
         start_time = time.time()
-        while time.time() - start_time < timeout:
+        while True:
+            elapsed = time.time() - start_time
+            descargando = False
             try:
                 archivos_ahora = set(os.listdir(self.download_dir))
                 nuevos = archivos_ahora - archivos_antes
@@ -2014,11 +2206,19 @@ class Bot:
                         reverse=True,
                     )
                     return candidatos[0]
+                # ¿Hay un archivo temporal de descarga en curso?
+                descargando = any(f.lower().endswith(en_progreso) for f in archivos_ahora)
             except Exception:
                 pass
-            time.sleep(1)
 
-        return None
+            # Sin descarga en curso y agotado el timeout normal -> rendirse.
+            if not descargando and elapsed >= timeout:
+                return None
+            # Con descarga en curso pero superado el tope absoluto -> rendirse.
+            if elapsed >= hard_cap:
+                self.log("[WARN] Descarga en curso supero el tope de espera; se abandona.")
+                return None
+            time.sleep(1)
 
     def _detectar_ventana_nueva(self, ventanas_antes, timeout=8):
         start_time = time.time()
@@ -2060,7 +2260,7 @@ class Bot:
         except Exception:
             return False
 
-    def _descargar_pdf_desde_contexto_actual(self, cedula, ventanas_antes, archivos_antes, numero_factura, tipo_detectado_tabla, servicio, fecha_inicio=None, fecha_fin=None, numero_ingreso=None):
+    def _descargar_pdf_desde_contexto_actual(self, cedula, ventanas_antes, archivos_antes, numero_factura, tipo_detectado_tabla, servicio, fecha_inicio=None, fecha_fin=None, numero_ingreso=None, permitir_duplicado_unico=False):
         try:
             current_url = self.driver.current_url
             if not current_url:
@@ -2098,9 +2298,12 @@ class Bot:
                 numero_factura=numero_factura,
                 fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
                 numero_ingreso=numero_ingreso,
+                permitir_duplicado_unico=permitir_duplicado_unico,
             )
             self._cerrar_ventanas_auxiliares(ventanas_antes)
-            # Limpiar cualquier PDF DUPLICADO que Chrome haya auto-descargado en paralelo.
+            # Limpiar PDFs auto-descargados por el navegador (patron RptHistoria*.pdf).
+            # SAFE en cualquier modo: solo borra archivos genericos del navegador,
+            # nunca PDFs ya renombrados con prefijo de cedula.
             try:
                 self._eliminar_pdfs_duplicados_recientes(archivos_antes, ventana_segundos=15)
             except Exception:
@@ -2112,7 +2315,7 @@ class Bot:
             self.log(f"[WARN] Falló descarga directa del PDF abierto: {e}")
             return None
 
-    def descargar_historia_clinica(self, cedula, fecha_inicio, fecha_fin, servicio=None, estrategia="RECIENTE", tipo_hc_objetivo=None, _reintento=0, numero_factura=None, numero_ingreso=None):
+    def descargar_historia_clinica(self, cedula, fecha_inicio, fecha_fin, servicio=None, estrategia="RECIENTE", tipo_hc_objetivo=None, _reintento=0, numero_factura=None, numero_ingreso=None, _modo_rango_fechas=False, _indice_objetivo=None):
         # Crear solo la carpeta de servicio antes de intentar la descarga.
         try:
             base_dir = self.download_dir if hasattr(self, 'download_dir') else 'downloads'
@@ -2122,16 +2325,16 @@ class Bot:
         except Exception as e:
             self.log(f"[WARN] No se pudo crear carpeta previa: {e}")
         """
-        Descarga la historia clÃ­nica de un paciente dado.
-        estrategia: "RECIENTE" (default, primera de la lista) o "ANTIGUA" (Ãºltima de la lista).
+        Descarga la historia clínica de un paciente dado.
+        estrategia: "RECIENTE" (default, primera de la lista) o "ANTIGUA" (última de la lista).
         """
         self.log(f"--- INICIANDO DESCARGA DE HC: {cedula} ---")
         
         # Determinar carpeta de descarga actual (para monitoreo)
-        # Esto depende de cÃ³mo se configurÃ³ el driver, pero podemos intentar inferirlo o buscar en las prefs
-        # si pudiÃ©ramos acceder a ellas. 
-        # Como no guardamos el download_dir en self, asumimos que si no se configurÃ³, es 'downloads'.
-        # MEJORA: PodrÃ­amos guardar self.download_dir en iniciar_navegador.
+        # Esto depende de cómo se configuró el driver, pero podemos intentar inferirlo o buscar en las prefs
+        # si pudiéramos acceder a ellas. 
+        # Como no guardamos el download_dir en self, asumimos que si no se configuró, es 'downloads'.
+        # MEJORA: Podríamos guardar self.download_dir en iniciar_navegador.
         
         try:
             if not self._driver_operativo():
@@ -2152,14 +2355,14 @@ class Bot:
             if self._pagina_en_blanco_o_error() or self._es_pantalla_login():
                 self.recuperar_pagina_y_sesion(f"inicio descarga HC CC={cedula}")
 
-            # 1. Verificar si ya estamos en el mÃ³dulo (OptimizaciÃ³n de navegaciÃ³n)
+            # 1. Verificar si ya estamos en el módulo (Optimización de navegación)
             self.driver.switch_to.default_content()
             en_modulo = False
             try:
-                # BÃºsqueda rÃ¡pida sin esperas largas
+                # Búsqueda rápida sin esperas largas
                 if self.buscar_elemento_en_frames(*SELECTORES["hc_pac_id"]):
                     en_modulo = True
-                    self.log("[OPTIMIZACION] Ya estamos en el mÃ³dulo de Historia ClÃ­nica. Omitiendo navegaciÃ³n de menÃº.")
+                    self.log("[OPTIMIZACION] Ya estamos en el módulo de Historia Clínica. Omitiendo navegación de menú.")
             except: pass
 
             if not en_modulo:
@@ -2168,29 +2371,29 @@ class Bot:
                     SELECTORES["submenu_consultar_historia"]
                 )
             
-            # Esperar un momento para asegurar que el formulario se limpiÃ³/cargÃ³
+            # Esperar un momento para asegurar que el formulario se limpió/cargó
             time.sleep(1)
             
-            # 2. Manejo de Frames (Buscar input de cÃ©dula)
+            # 2. Manejo de Frames (Buscar input de cédula)
             # Primero salir al contexto default antes de buscar frames nuevamente
             self.driver.switch_to.default_content()
             
             if not self.buscar_elemento_en_frames(*SELECTORES["hc_pac_id"]):
-                self.log("[ERROR] No se encontrÃ³ el campo de cÃ©dula (vPACNUMIDE).")
+                self.log("[ERROR] No se encontró el campo de cédula (vPACNUMIDE).")
                 self.diagnostico_exhaustivo()
-                raise Exception("No se encontrÃ³ formulario de HC")
+                raise Exception("No se encontró formulario de HC")
             
             # 3. Llenar formulario
             self.log(f"[INFO] Llenando datos: CC={cedula}, Fechas={fecha_inicio}-{fecha_fin}, Servicio={servicio}")
             
-            # CÃ©dula
+            # Cédula
             inp_cc = self.driver.find_element(*SELECTORES["hc_pac_id"])
-            # ValidaciÃ³n de seguridad: Asegurar que no sea campo de fecha
+            # Validación de seguridad: Asegurar que no sea campo de fecha
             try:
                 inp_id = inp_cc.get_attribute('id')
                 if "FEC" in str(inp_id).upper():
-                    self.log(f"[CRITICO] El selector de cÃ©dula apunta a un campo de FECHA ({inp_id}). Abortando escritura.")
-                    raise Exception("Selector de cÃ©dula incorrecto (es una fecha)")
+                    self.log(f"[CRITICO] El selector de cédula apunta a un campo de FECHA ({inp_id}). Abortando escritura.")
+                    raise Exception("Selector de cédula incorrecto (es una fecha)")
             except: pass
             
             self.resaltar_elemento(inp_cc)
@@ -2262,38 +2465,47 @@ class Bot:
             btn_consultar.click()
             self.log("[INFO] Consulta enviada. Esperando carga completa de resultados...")
             
-            # Espera dinÃ¡mica para asegurar que la consulta terminÃ³
+            # Espera dinámica para asegurar que la consulta terminó
             self.esperar_carga_completa(timeout=60)
 
-            # VerificaciÃ³n inmediata de "Sin registros" para evitar esperas innecesarias
+            # Verificación inmediata de "Sin registros" para evitar esperas innecesarias.
+            # Detección case-insensitive y ampliada (cuando NO hay nada por
+            # descargar, pasar al siguiente registro lo antes posible).
             try:
                 cuerpo_texto = self.driver.find_element(By.TAG_NAME, "body").text
-                # Lista ampliada de posibles mensajes de "no resultados"
+                cuerpo_norm = normalize_text(cuerpo_texto)
                 mensajes_vacio = [
-                    "No se encontraron registros", 
-                    "No existen registros", 
-                    "No hay datos", 
-                    "0 registros encontrados",
-                    "No se encontrÃ³ informaciÃ³n",
-                    "No se han encontrado datos"
+                    "NO SE ENCONTRARON REGISTROS",
+                    "NO EXISTEN REGISTROS",
+                    "NO HAY DATOS",
+                    "NO HAY REGISTROS",
+                    "0 REGISTROS ENCONTRADOS",
+                    "NINGUN REGISTRO",
+                    "SIN REGISTROS",
+                    "NO SE ENCONTRO INFORMACION",
+                    "NO SE HAN ENCONTRADO DATOS",
+                    "NO SE ENCONTRARON DATOS",
+                    "NO SE ENCONTRARON RESULTADOS",
                 ]
-                if any(m in cuerpo_texto for m in mensajes_vacio):
-                    self.log("[WARN] Consulta finalizada: No se encontraron registros clÃ­nicos (DetecciÃ³n rÃ¡pida en body).")
+                if any(m in cuerpo_norm for m in mensajes_vacio):
+                    self.log("[WARN] Consulta finalizada: No se encontraron registros clínicos (Detección rápida en body).")
                     return False, "Sin registros encontrados"
-            except Exception: 
+            except Exception:
                 pass # Si falla la lectura, continuamos con la espera normal
-            
+
             # 5. Esperar resultados y Click en Imprimir
             try:
-                # Verificamos si hay botÃ³n de imprimir (Timeout aumentado a 10s para conexiones lentas)
-                wait_resultados = WebDriverWait(self.driver, 10)
+                # Espera del boton imprimir. La pagina ya esta "quieta" (esperar_carga_completa),
+                # asi que si hay resultados los botones estan presentes casi de inmediato.
+                # Si no aparecen en este margen y la tabla esta vacia -> sin registros.
+                wait_resultados = WebDriverWait(self.driver, self.HC_RESULTADOS_TIMEOUT)
                 
                 try:
                     wait_resultados.until(EC.visibility_of_element_located(SELECTORES["hc_btn_imprimir"]))
                 except TimeoutException:
-                     # Si falla, verificar si hay mensaje de "No se encontraron registros" en contenedores especÃ­ficos
+                     # Si falla, verificar si hay mensaje de "No se encontraron registros" en contenedores específicos
                     try:
-                        # Buscar en mensajes de error/warning tÃ­picos
+                        # Buscar en mensajes de error/warning típicos
                         msgs = self.driver.find_elements(By.XPATH, "//*[contains(@class, 'Error') or contains(@class, 'Warning') or contains(@class, 'Message')]")
                         for m in msgs:
                              if m.is_displayed() and any(txt in m.text for txt in ["No se encontraron", "No existen", "0 registros"]):
@@ -2302,10 +2514,10 @@ class Bot:
                         
                         cuerpo = self.driver.find_element(By.TAG_NAME, "body").text
                         if "No se encontraron" in cuerpo or "No existen" in cuerpo:
-                            self.log("[WARN] El sistema indica que no hay historias clÃ­nicas para este paciente.")
+                            self.log("[WARN] El sistema indica que no hay historias clínicas para este paciente.")
                             return False, "Sin registros"
                     except: pass
-                    # Relanzar excepciÃ³n si no fue un caso controlado
+                    # Relanzar excepción si no fue un caso controlado
                     raise TimeoutException("No se encontraron botones de imprimir ni mensajes de error conocidos tras la consulta.")
 
                 # Buscar TODOS los botones de imprimir para aplicar estrategia
@@ -2318,7 +2530,7 @@ class Bot:
                     try:
                         btns_print = [self.driver.find_element(*SELECTORES["hc_btn_imprimir"])]
                     except NoSuchElementException:
-                        # Ãšltimo intento: Buscar inputs de tipo imagen o enlaces con 'imprimir'
+                        # Último intento: Buscar inputs de tipo imagen o enlaces con 'imprimir'
                          btns_print = self.driver.find_elements(By.XPATH, "//input[@type='image' and contains(@src, 'imprimir')] | //a[contains(@href, 'imprimir')]")
 
                 if not btns_print:
@@ -2331,30 +2543,37 @@ class Bot:
 
                 # ===== ESTRATEGIA RANGO FECHAS =====
                 # Descarga TODAS las HC validas que el paciente tenga en el rango.
-                # Cada PDF se nombra <CC>_<COD_SERVICIO>_<NUMERO_INGRESO>.pdf
+                # Se selecciona cada fila por su POSICION (indice), no por el numero
+                # de ingreso: asi NO se pierde ninguna HC aunque el ingreso no se
+                # pueda extraer del texto de la fila. El ingreso (si se detecta) se
+                # usa solo para el nombre del archivo cuando no hay factura.
                 _est_norm = str(estrategia or "").upper().strip().replace("_", " ")
-                if _est_norm in ("RANGO FECHAS", "RANGO") and not numero_ingreso:
-                    ingresos_unicos = []
-                    seen_ing = set()
-                    for _btn in btns_print:
+                if _est_norm in ("RANGO FECHAS", "RANGO") and _indice_objetivo is None and not numero_ingreso:
+                    filas_validas = []  # [(idx, ingreso_or_'')]
+                    for _i_btn, _btn in enumerate(btns_print):
                         try:
                             _txt = self._texto_fila_por_boton(_btn)
                             _txtu = (_txt or "").upper()
                             if any(s in _txtu for s in ("NO ASISTIDA", "CANCELADA", "POR ATENDER")):
+                                self.log(f"[RANGO] Fila {_i_btn+1}: descartada por estado.")
                                 continue
                             _ing = self._extraer_numero_ingreso_de_fila(_txt)
-                            if not _ing or _ing in seen_ing:
-                                continue
-                            seen_ing.add(_ing)
-                            ingresos_unicos.append(_ing)
-                        except Exception:
-                            continue
-                    self.log(f"[INFO] RANGO FECHAS: {len(ingresos_unicos)} ingresos validos detectados: {ingresos_unicos}")
-                    if not ingresos_unicos:
+                            filas_validas.append((_i_btn, _ing or ""))
+                            self.log(f"[RANGO] Fila {_i_btn+1}: incluida (ingreso={_ing or 'N/D'}).")
+                        except Exception as _e:
+                            # Ante cualquier error, NO descartar la fila: incluirla por indice.
+                            filas_validas.append((_i_btn, ""))
+                            self.log(f"[RANGO] Fila {_i_btn+1}: incluida pese a error extrayendo ingreso: {_e}")
+                    self.log(f"[INFO] RANGO FECHAS: {len(filas_validas)} filas validas para descargar.")
+                    if not filas_validas:
                         return False, "RANGO FECHAS: sin registros validos en el rango"
                     descargados = []
                     fallos = []
-                    for _ing in ingresos_unicos:
+                    for _idx_fila, _ing in filas_validas:
+                        if self._detener_solicitado():
+                            self.log("[RANGO] Detener solicitado: abortando descargas restantes.")
+                            break
+                        _etq = _ing or f"fila{_idx_fila+1}"
                         try:
                             ok_i, info_i = self.descargar_historia_clinica(
                                 cedula=cedula,
@@ -2365,14 +2584,35 @@ class Bot:
                                 tipo_hc_objetivo=None,
                                 _reintento=2,
                                 numero_factura=numero_factura,
-                                numero_ingreso=_ing,
+                                numero_ingreso=(_ing or None),
+                                _modo_rango_fechas=True,
+                                _indice_objetivo=_idx_fila,
                             )
                             if ok_i:
-                                descargados.append(_ing)
+                                descargados.append(_etq)
                             else:
-                                fallos.append(f"{_ing}:{info_i}")
+                                fallos.append(f"{_etq}:{info_i}")
+                                self.log(f"[RANGO] Fallo descarga {_etq}: {info_i}")
                         except Exception as _e:
-                            fallos.append(f"{_ing}:{_e}")
+                            fallos.append(f"{_etq}:{_e}")
+                            self.log(f"[RANGO] Excepcion descargando {_etq}: {_e}")
+                    self.log(f"[RANGO] Resumen: {len(descargados)}/{len(filas_validas)} descargados. Fallos: {len(fallos)}")
+                    # Esperar a que el navegador termine cualquier auto-download pendiente.
+                    # NO eliminamos PDFs genericos aqui: el `barrer_pdfs_huerfanos`
+                    # los rescatara extrayendo CC e ingreso desde el contenido.
+                    # (La eliminacion agresiva con ventana 600s borraba PDFs
+                    # en vuelo de OTROS navegadores en ejecuciones paralelas.)
+                    try:
+                        time.sleep(4)
+                    except Exception:
+                        pass
+                    # RED DE SEGURIDAD: barrer cualquier PDF restante hacia subcarpeta servicio.
+                    try:
+                        movidos_huerfanos = self.barrer_pdfs_huerfanos(cedula=cedula, servicio=servicio)
+                        if movidos_huerfanos:
+                            self.log(f"[RANGO] Recuperados {len(movidos_huerfanos)} PDFs huerfanos a subcarpeta servicio.")
+                    except Exception as _e_barrido:
+                        self.log(f"[RANGO] Error en barrido final: {_e_barrido}")
                     if descargados:
                         return True, f"RANGO FECHAS: {len(descargados)} descargados ({','.join(descargados)})"
                     return False, f"RANGO FECHAS sin descargas. fallos={fallos}"
@@ -2383,7 +2623,20 @@ class Bot:
                 tipo_objetivo_norm = self._normalizar_tipo_objetivo(tipo_hc_objetivo)
                 es_psiquiatria = "PSIQUIATRIA" in normalize_text(servicio)
 
-                if estrategia == "ANTIGUA":
+                # Seleccion directa por POSICION (RANGO FECHAS pass-2): garantiza que
+                # se descargue exactamente la fila indicada, sin depender de extraer
+                # el numero de ingreso del texto.
+                if _indice_objetivo is not None:
+                    if 0 <= _indice_objetivo < len(btns_print):
+                        target_btn = btns_print[_indice_objetivo]
+                        texto_fila = self._texto_fila_por_boton(target_btn)
+                        tipo_detectado_tabla = self._detectar_tipo_en_texto_fila(texto_fila)
+                        idx_btn_seleccionado = _indice_objetivo
+                        self.log(f"[INFO] Fila {_indice_objetivo+1} seleccionada por indice (RANGO). Tipo: {tipo_detectado_tabla}")
+                    else:
+                        return False, f"Indice de fila {_indice_objetivo} fuera de rango ({len(btns_print)} filas)"
+                    indices_busqueda = range(0)  # no recorrer el resto
+                elif estrategia == "ANTIGUA":
                     indices_busqueda = range(len(btns_print) - 1, -1, -1)
                     self.log("[INFO] Estrategia: ANTIGUA - Se buscara desde el ultimo registro.")
                 else:
@@ -2430,7 +2683,7 @@ class Bot:
                         return False, f"Sin registros tipo {tipo_objetivo_norm} en el rango de fechas"
                     return False, "Sin registros validos para descargar en el rango de fechas"
 
-                # Scroll al botÃ³n objetivo antes de interactuar (CRÃTICO para listas largas)
+                # Scroll al botón objetivo antes de interactuar (CRÍTICO para listas largas)
                 try:
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", target_btn)
                     time.sleep(0.5) # Estabilizar tras scroll
@@ -2460,9 +2713,9 @@ class Bot:
                 try:
                     target_btn.click()
                 except Exception as e_click:
-                    # Stale Element Reference Exception: El elemento cambiÃ³, lo buscamos de nuevo
+                    # Stale Element Reference Exception: El elemento cambió, lo buscamos de nuevo
                     if "stale element reference" in str(e_click).lower():
-                        self.log("[WARN] Elemento obsoleto (stale). Buscando botÃ³n de nuevo...")
+                        self.log("[WARN] Elemento obsoleto (stale). Buscando botón de nuevo...")
                         try:
                             # Re-buscar botones
                             btns_re = self.driver.find_elements(By.XPATH, "//input[starts-with(@name, 'vIMPRIMIRHC_')]")
@@ -2470,21 +2723,23 @@ class Bot:
                             if btns_re and len(btns_re) > idx_re:
                                 target_btn = btns_re[idx_re]
                                 target_btn.click()
-                                self.log("[EXITO] Click exitoso tras recuperaciÃ³n.")
+                                self.log("[EXITO] Click exitoso tras recuperación.")
                             else:
-                                raise Exception("No se pudo recuperar el botÃ³n tras StaleElement")
+                                raise Exception("No se pudo recuperar el botón tras StaleElement")
                         except Exception as e_re:
-                            self.log(f"[WARN] FallÃ³ recuperaciÃ³n click normal ({e_re}). Intentando JS...")
+                            self.log(f"[WARN] Falló recuperación click normal ({e_re}). Intentando JS...")
                             try:
                                 self.driver.execute_script("arguments[0].click();", target_btn)
-                            except: pass # Ãšltimo intento
+                            except: pass # Último intento
                     else:
-                        self.log(f"[WARN] Click normal fallÃ³ ({str(e_click)}). Intentando JS...")
+                        self.log(f"[WARN] Click normal falló ({str(e_click)}). Intentando JS...")
                         self.driver.execute_script("arguments[0].click();", target_btn)
 
                 ventana_nueva = self._detectar_ventana_nueva(ventanas_antes, timeout=8)
                 if hasattr(self, 'download_dir'):
-                    archivo_descargado = self._esperar_archivo_descargado(archivos_antes, timeout=8)
+                    # Espera principal de la descarga: consciente de descargas lentas
+                    # en curso (.crdownload). Evita el "skip" cuando 360 esta lento.
+                    archivo_descargado = self._esperar_archivo_descargado(archivos_antes, timeout=self.HC_DESCARGA_TIMEOUT)
                     if not archivo_descargado and ventana_nueva and self._contexto_actual_es_pdf():
                         tipo_descargado = self._descargar_pdf_desde_contexto_actual(
                             cedula=cedula,
@@ -2496,6 +2751,7 @@ class Bot:
                             fecha_inicio=fecha_inicio,
                             fecha_fin=fecha_fin,
                             numero_ingreso=numero_ingreso,
+                            permitir_duplicado_unico=_modo_rango_fechas,
                         )
                         if tipo_descargado:
                             return True, tipo_descargado
@@ -2513,8 +2769,8 @@ class Bot:
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
-                            # DEDUP: eliminar PDFs extra que Chrome haya auto-descargado en paralelo.
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
+                            # DEDUP seguro: solo borra patrones genericos del navegador.
                             try:
                                 self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
                             except Exception:
@@ -2526,7 +2782,7 @@ class Bot:
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
                             try:
                                 self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
                             except Exception:
@@ -2538,155 +2794,33 @@ class Bot:
                                 self._cerrar_ventanas_auxiliares(ventanas_antes)
 
                     self.log("[WARN] No se detectó descarga automática tras el click inicial.")
+                    # 360 a veces deja el visor "cargando": esperar a que el visor PDF
+                    # termine de renderizar antes de rendirse (evita el skip por lentitud).
                     if not self._contexto_actual_es_pdf():
-                        self._cerrar_ventanas_auxiliares(ventanas_antes)
-                        self.log("[ERROR] No se abrió un visor PDF ni apareció un archivo descargado.")
-                        try:
-                            self.exportar_resumen()
-                        except Exception as e:
-                            self.log(f"[WARN] No se pudo exportar resumen: {e}")
-                        return False, "No se detectó descarga"
-
-                        # 2. INTENTO DE CLIC EN BOTÃ“N DE DESCARGA (Shadow DOM / JS)
-                        # El usuario solicita explÃ­citamente usar el botÃ³n de descarga del visor
-                        self.log("[ACCION] Intentando clic en botÃ³n de descarga del visor (JS/Shadow DOM)...")
-                        
-                        js_click_download = """
-                        function clickDownload() {
-                            try {
-                                // Estrategia Universal de BÃºsqueda Recursiva en Shadow DOM
-                                function findElement(root, predicate) {
-                                    if (!root) return null;
-                                    if (predicate(root)) return root;
-                                    
-                                    // Buscar en Shadow Root
-                                    if (root.shadowRoot) {
-                                        var res = findElement(root.shadowRoot, predicate);
-                                        if (res) return res;
-                                    }
-                                    
-                                    // Buscar en hijos
-                                    if (root.children) {
-                                        for (var i = 0; i < root.children.length; i++) {
-                                            var res = findElement(root.children[i], predicate);
-                                            if (res) return res;
-                                        }
-                                    }
-                                    return null;
-                                }
-                                
-                                var viewer = document.querySelector('pdf-viewer');
-                                if (viewer) {
-                                    // Buscar botÃ³n que sea 'cr-icon-button' y tenga icono de descarga
-                                     var btn = findElement(viewer, function(el) {
-                                         if (el.tagName !== 'CR-ICON-BUTTON') return false;
-                                         
-                                         // Coincidencia exacta basada en la evidencia del usuario (id="save" con label "Descargar")
-                                         if (el.id === 'save' && (el.getAttribute('aria-label') === 'Descargar' || el.getAttribute('title') === 'Descargar')) return true;
-                                         
-                                         // Coincidencias genÃ©ricas anteriores
-                                         if (el.getAttribute('iron-icon') === 'cr:file-download') return true;
-                                         if (el.id === 'download' || el.id === 'downloads') return true;
-                                         
-                                         return false;
-                                     });
-                                    
-                                    if (btn) {
-                                        btn.click();
-                                        return "Clicked via Recursive Search";
-                                    }
-                                }
-                                
-                                // Estrategia Backup: Selectores comunes
-                                var selectors = [
-                                    '#download', 
-                                    'button[aria-label="Download"]', 
-                                    'button[title="Descargar"]',
-                                    'a[download]',
-                                    '#secondaryToolbarButton'
-                                ];
-                                
-                                for (var i = 0; i < selectors.length; i++) {
-                                    var el = document.querySelector(selectors[i]);
-                                    if (el && el.offsetParent !== null) {
-                                        el.click();
-                                        return "Clicked Generic Button";
-                                    }
-                                }
-                                
-                                return "Not Found";
-                            } catch(e) {
-                                return "Error: " + e.toString();
-                            }
-                        }
-                        return clickDownload();
-                        """
-                        
-                        # Bucle de espera activa para el botÃ³n de descarga
-                        # Esto es necesario porque el visor PDF puede tardar en renderizar aunque la pÃ¡gina estÃ© "cargada"
-                        start_wait_btn = time.time()
-                        found_button = False
-                        
-                        self.log("[WAIT] Buscando botÃ³n de descarga en la interfaz del visor...")
-                        
-                        # ESTRATEGIA 0: ESCANEO DE LA PÃGINA (Guardar para diagnÃ³stico)
-                        try:
-                            os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
-                            debug_visor_path = os.path.join(RUNTIME_LOG_DIR, "debug_visor.txt")
-                            structure_scan_path = os.path.join(RUNTIME_LOG_DIR, "structure_scan.txt")
-                            # 1. Guardar page_source bÃ¡sico
-                            with open(debug_visor_path, "w", encoding="utf-8") as f:
-                                f.write(self.driver.page_source)
-                            
-                            # 2. Escaneo profundo de Shadow DOM para encontrar estructura
-                            js_deep_scan = """
-                                function scanShadow(root, depth) {
-                                    var output = "";
-                                    var indent = " ".repeat(depth * 2);
-                                    
-                                    if (!root) return output;
-                                    
-                                    // Procesar elemento actual
-                                    var tag = root.tagName ? root.tagName.toLowerCase() : "node";
-                                    var id = root.id ? "#" + root.id : "";
-                                    var cls = root.className ? "." + root.className : "";
-                                    output += indent + tag + id + cls + "\\n";
-                                    
-                                    // Procesar Shadow Root
-                                    if (root.shadowRoot) {
-                                        output += indent + "  [SHADOW-ROOT]\\n";
-                                        // Iterar hijos del shadow root
-                                        var children = root.shadowRoot.children;
-                                        for (var i = 0; i < children.length; i++) {
-                                            output += scanShadow(children[i], depth + 2);
-                                        }
-                                    }
-                                    
-                                    // Procesar hijos normales
-                                    if (root.children) {
-                                        for (var i = 0; i < root.children.length; i++) {
-                                            output += scanShadow(root.children[i], depth + 1);
-                                        }
-                                    }
-                                    return output;
-                                }
-                                
-                                // Iniciar escaneo desde el body o desde pdf-viewer
-                                var viewer = document.querySelector('pdf-viewer');
-                                if (viewer) return scanShadow(viewer, 0);
-                                return scanShadow(document.body, 0);
-                            """
-                            scan_result = self.driver.execute_script(js_deep_scan)
-                            with open(structure_scan_path, "w", encoding="utf-8") as f:
-                                f.write(str(scan_result))
-                                
-                            self.log(f"[INFO] Página escaneada profundamente. Estructura guardada en '{structure_scan_path}'.")
-                        except Exception as e: 
-                            self.log(f"[WARN] Error al escanear pÃ¡gina: {e}")
-                        
-                        # ESTRATEGIA 0: DESCARGA DIRECTA POR URL (Requests con Cookies)
-                        # Si la URL actual apunta al PDF (servlet), intentamos descargarlo directamente
-                        # evitando la interacciÃ³n con la UI del visor de Chrome.
+                        _t_visor = time.time()
+                        while time.time() - _t_visor < self.HC_DESCARGA_TIMEOUT:
+                            if self._detener_solicitado():
+                                break
+                            if self._contexto_actual_es_pdf():
+                                break
+                            # Tambien puede haber empezado una descarga directa tardia.
+                            if self._esperar_archivo_descargado(archivos_antes, timeout=1):
+                                break
+                            time.sleep(1)
+                    if not self._contexto_actual_es_pdf():
+                        # Ultimo intento: ¿quedo un archivo o una descarga en curso?
+                        archivo_tardio = self._esperar_archivo_descargado(archivos_antes, timeout=2)
+                        if not archivo_tardio:
+                            self._cerrar_ventanas_auxiliares(ventanas_antes)
+                            self.log("[ERROR] No se abrió un visor PDF ni apareció un archivo descargado.")
+                            try:
+                                self.exportar_resumen()
+                            except Exception as e:
+                                self.log(f"[WARN] No se pudo exportar resumen: {e}")
+                            return False, "No se detectó descarga"
+                        archivo_descargado = archivo_tardio
+                    else:
+                        # El visor PDF ya cargo: intentar descarga directa via HTTP.
                         tipo_descargado = self._descargar_pdf_desde_contexto_actual(
                             cedula=cedula,
                             ventanas_antes=ventanas_antes,
@@ -2697,195 +2831,23 @@ class Bot:
                             fecha_inicio=fecha_inicio,
                             fecha_fin=fecha_fin,
                             numero_ingreso=numero_ingreso,
+                            permitir_duplicado_unico=_modo_rango_fechas,
                         )
                         if tipo_descargado:
                             return True, tipo_descargado
-
-                        # ESTRATEGIA 1: BYPASS DE UI (Intentar descarga directa si hay URL de PDF visible)
-                        # Buscamos si hay un <embed> o <iframe> con el PDF y creamos nuestro propio enlace de descarga
-                        js_bypass = """
-                            var embed = document.querySelector('embed[type="application/pdf"]');
-                            if (embed && embed.src) {
-                                var link = document.createElement('a');
-                                link.href = embed.src;
-                                link.download = 'documento_bypass.pdf';
-                                document.body.appendChild(link);
-                                link.click();
-                                return "Descarga iniciada por Bypass";
-                            }
-                            return "No se encontrÃ³ embed PDF";
-                        """
-                        bypass_res = self.driver.execute_script(js_bypass)
-                        if "Descarga iniciada" in str(bypass_res):
-                            self.log(f"[EXITO] {bypass_res}")
-                            found_button = True
-                            time.sleep(3)
-                        
-                        # ESTRATEGIA 2: CLIC EN BOTÃ“N NATIVO (Solo si el Bypass fallÃ³)
-                        if not found_button:
-                            # Aumentamos el tiempo de bÃºsqueda estricta del botÃ³n
-                            tiempo_busqueda_js = 10 
-                            
-                            js_click_download = """
-                            function clickDownload() {
-                                try {
-                                    var viewer = document.querySelector('pdf-viewer');
-                                    if (!viewer) return "No pdf-viewer found";
-                                    
-                                    // Helper para acceder al Shadow DOM
-                                    var getShadow = (e) => e.shadowRoot || e;
-                                    
-                                    // ESTRATEGIA A: Ruta EspecÃ­fica (Basada en Screenshot)
-                                    // pdf-viewer -> viewer-toolbar -> viewer-download-controls -> #save (o #download)
-                                    try {
-                                        var toolbar = getShadow(viewer).querySelector('viewer-toolbar');
-                                        if (toolbar) {
-                                            var controls = getShadow(toolbar).querySelector('viewer-download-controls');
-                                            if (controls) {
-                                                var btn = getShadow(controls).querySelector('#save'); // Prioridad ID 'save'
-                                                if (!btn) btn = getShadow(controls).querySelector('#download'); // Fallback ID 'download'
-                                                
-                                                if (btn) {
-                                                    btn.click();
-                                                    return "Clicked via Specific Path: viewer-download-controls -> #" + btn.id;
-                                                }
-                                            }
-                                        }
-                                    } catch(e) { console.log("Path search failed: " + e); }
-                                    
-                                    // ESTRATEGIA C: BÃºsqueda de Fuerza Bruta (Iterar TODOS los nodos en Shadow DOM)
-                                     function findAll(root) {
-                                         var found = [];
-                                         if (!root) return found;
-                                         
-                                         // Check current element
-                                         if (root.id === 'save' || root.id === 'download' || 
-                                            (root.tagName === 'CR-ICON-BUTTON' && root.getAttribute('iron-icon') === 'cr:file-download') ||
-                                            (root.getAttribute && (root.getAttribute('aria-label') === 'Descargar' || root.getAttribute('title') === 'Descargar'))) {
-                                             found.push(root);
-                                         }
-                                         
-                                         // Shadow Root
-                                         if (root.shadowRoot) {
-                                             var children = root.shadowRoot.children;
-                                             for (var i = 0; i < children.length; i++) {
-                                                 found = found.concat(findAll(children[i]));
-                                             }
-                                         }
-                                         
-                                         // Normal Children
-                                         if (root.children) {
-                                             for (var i = 0; i < root.children.length; i++) {
-                                                 found = found.concat(findAll(root.children[i]));
-                                             }
-                                         }
-                                         return found;
-                                     }
-                                     
-                                     var candidates = findAll(viewer);
-                                     if (candidates.length > 0) {
-                                         // Priorizar el que sea visible o tenga ID 'save'
-                                         var best = candidates.find(c => c.id === 'save');
-                                         if (!best) best = candidates[0];
-                                         
-                                         best.click();
-                                         return "Clicked via Brute Force: #" + best.id + " (" + best.tagName + ")";
-                                     }
-                                     
-                                     return "Not Found";
-                                 } catch(e) {
-                                     return "Error: " + e.toString();
-                                 }
-                             }
-                             return clickDownload();
-                             """
-                             
-                            while time.time() - start_wait_btn < tiempo_busqueda_js: 
-                                resultado_click = self.driver.execute_script(js_click_download)
-                                
-                                # Log detallado para depuraciÃ³n
-                                if "Error" in str(resultado_click) or "Not Found" in str(resultado_click):
-                                    # Si falla, intentamos simular movimiento de ratÃ³n para "despertar" la UI
-                                    try:
-                                        action = webdriver.ActionChains(self.driver)
-                                        action.move_by_offset(100, 100).perform()
-                                    except: pass
-                                else:
-                                    self.log(f"[EXITO] Clic realizado en botÃ³n de descarga: {resultado_click}")
-                                    found_button = True
-                                    time.sleep(2) # Dar tiempo a que inicie la descarga
-                                    break
-                                
-                                time.sleep(1) # Reintentar cada segundo
-                        
-                        if not found_button:
-                            self.log("[WARN] No se encontrÃ³ botÃ³n de descarga por JS tras 5s. Activando PLAN B: Atajo de teclado (CTRL+S).")
-                            # PLAN B: Simular CTRL+S (Guardar)
-                            # Esto es equivalente a dar clic en descargar y suele funcionar cuando el JS no accede al Shadow DOM
-                            try:
-                                # Asegurar foco en el documento antes de enviar teclas
-                                self.driver.execute_script("window.focus(); document.body.focus();")
-                                time.sleep(0.5)
-                                
-                                action = webdriver.ActionChains(self.driver)
-                                action.key_down(Keys.CONTROL).send_keys('s').key_up(Keys.CONTROL).perform()
-                                self.log("[ACCION] Enviado comando CTRL+S.")
-                                time.sleep(3)
-                            except Exception as e:
-                                self.log(f"[ERROR] FallÃ³ envÃ­o de teclas: {e}")
-                            
-                            # ESTRATEGIA 3: ACTION CHAINS (Clic en coordenadas fijas - Ãšltimo recurso visual)
-                            if not found_button:
-                                self.log("[WARN] JS y Teclado fallaron. Intentando clic por coordenadas (esquina superior derecha)...")
-                                try:
-                                    # Moverse a la esquina superior derecha donde suele estar el botÃ³n de descarga
-                                    # Ajustar offset segÃºn resoluciÃ³n (ej: 150px desde la derecha, 60px desde arriba)
-                                    action = webdriver.ActionChains(self.driver)
-                                    
-                                    # Mover al body primero
-                                    self.driver.execute_script("window.scrollTo(0,0);")
-                                    
-                                    # Intentar ubicar el toolbar aunque sea en shadow
-                                    # Si no, clic a ciegas
-                                    ancho_ventana = self.driver.execute_script("return window.innerWidth;")
-                                    
-                                    # Coordenadas estimadas del botÃ³n de descarga en visor Chrome estÃ¡ndar:
-                                    # X: Ancho - 150px, Y: 55px
-                                    x_offset = ancho_ventana - 150
-                                    y_offset = 55
-                                    
-                                    action.move_by_offset(x_offset, y_offset).click().perform()
-                                    self.log(f"[ACCION] Clic en coordenadas estimadas: {x_offset}, {y_offset}")
-                                    time.sleep(2)
-                                    
-                                    # Reset action chains
-                                    action = webdriver.ActionChains(self.driver)
-                                    action.move_by_offset(0, 0) # Reset
-                                except Exception as e:
-                                    self.log(f"[WARN] FallÃ³ clic por coordenadas: {e}")
-
-                        # 3. RENOMBRADO DE ARCHIVO
-                        # Esperamos a que aparezca un archivo nuevo en la carpeta
-                        
-                        # Si falla el clic, y es un PDF directo, intentamos simular CTRL+S (Guardar)
-                        # OJO: Esto abre diÃ¡logo si no estÃ¡ configurado para auto-guardar.
-                        # Asumimos que las prefs 'download.prompt_for_download': False funcionan.
-                        
-                        # NOTA: Eliminamos la descarga por 'requests' directa a peticiÃ³n del usuario
-                        # que prefiere la interacciÃ³n con el botÃ³n.
-
-                    # Ciclo de espera de archivo
-                    archivo_descargado = self._esperar_archivo_descargado(archivos_antes, timeout=30)
+                        # Si la descarga directa no aplico, el visor suele disparar
+                        # una descarga automatica: esperarla.
+                        archivo_descargado = self._esperar_archivo_descargado(archivos_antes, timeout=self.HC_DESCARGA_TIMEOUT)
                     
                     if archivo_descargado:
                         self.log(f"[INFO] Archivo detectado: {archivo_descargado}")
                         ruta_original = os.path.join(self.download_dir, archivo_descargado)
                         
                         try:
-                            # Esperar un momento para asegurar que el archivo se liberÃ³
+                            # Esperar un momento para asegurar que el archivo se liberó
                             time.sleep(2)
                             
-                            # Si se abriÃ³ ventana nueva, cerrarla
+                            # Si se abrió ventana nueva, cerrarla
                             if ventana_nueva:
                                 self._cerrar_ventanas_auxiliares(ventanas_antes)
                                 
@@ -2895,7 +2857,7 @@ class Bot:
                             else:
                                 tipo_final = tipo_detectado_tabla
 
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
                             try:
                                 self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
                             except Exception:
@@ -2906,7 +2868,7 @@ class Bot:
                             if ventana_nueva:
                                 self._cerrar_ventanas_auxiliares(ventanas_antes)
                             
-                            # Intentamos retornar Ã©xito aunque falle renombrado, asumiendo que el archivo existe con nombre original
+                            # Intentamos retornar éxito aunque falle renombrado, asumiendo que el archivo existe con nombre original
                             # Pero el path ruta_final no existe. Usamos ruta_original.
                             
                             # Si la tabla no clasifica bien (DESCONOCIDO/OTRO), usamos el PDF.
@@ -2915,28 +2877,29 @@ class Bot:
                             else:
                                 tipo_final = tipo_detectado_tabla
                             
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso)
+                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
                             return True, tipo_final
                     else:
-                        self.log("[WARN] Tiempo de espera agotado. No se detectÃ³ descarga automÃ¡tica.")
-                        
-                        # ESTRATEGIA FALLBACK: PrintToPDF si se abriÃ³ ventana nueva (DESACTIVADA)
+                        self.log("[WARN] Tiempo de espera agotado. No se detectó descarga automática.")
                         if ventana_nueva:
-                            self.log("[WARN] No se detectÃ³ descarga. PrintToPDF desactivado para evitar PDF como imagen.")
-                            
-                            # Limpieza: Cerrar ventana emergente
                             self._cerrar_ventanas_auxiliares(ventanas_antes)
-                            
-                            # No retornamos True porque no hubo descarga exitosa
-                            self.log("[ERROR] Descarga fallida: No se encontrÃ³ el botÃ³n y PrintToPDF estÃ¡ desactivado.")
-                        
-                        else:
-                            self.log("[ERROR] No se abriÃ³ ventana nueva ni se detectÃ³ descarga.")
-                
-                return False, "No se detectÃ³ descarga"
+
+                # RED DE SEGURIDAD: como SI habia un soporte (la fila tenia boton de
+                # imprimir), antes de rendirse barremos PDFs que se hayan bajado pero
+                # no se detectaron a tiempo (visor/descarga lenta) y los rescatamos.
+                try:
+                    time.sleep(2)
+                    rescatados = self.barrer_pdfs_huerfanos(cedula=cedula, servicio=servicio)
+                    if rescatados:
+                        self.log(f"[RESCATE] Soporte recuperado para CC={cedula}: {len(rescatados)} PDF(s).")
+                        return True, (tipo_detectado_tabla if tipo_detectado_tabla not in ("DESCONOCIDO", "OTRO") else "RESCATADO")
+                except Exception as _e_rescate:
+                    self.log(f"[WARN] Barrido de rescate fallo: {_e_rescate}")
+
+                return False, "No se detectó descarga"
                 
             except TimeoutException:
-                self.log("[WARN] No se encontraron historias clÃ­nicas para los criterios dados o tardÃ³ demasiado.")
+                self.log("[WARN] No se encontraron historias clínicas para los criterios dados o tardó demasiado.")
                 if _reintento < 1 and (self._pagina_en_blanco_o_error() or self._es_pantalla_login()):
                     self.log("[RECOVERY] Reintentando descarga tras recuperar sesion/pagina...")
                     if self.recuperar_pagina_y_sesion(f"timeout HC CC={cedula}"):
@@ -2973,14 +2936,14 @@ class Bot:
             raise
 
     def exportar_resumen(self):
-        os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
-        resumen_path = os.path.join(RUNTIME_LOG_DIR, "resumen_ejecucion.txt")
-        with open(resumen_path, "w", encoding="utf-8") as f:
-            f.write("RESUMEN DE EJECUCION DEL BOT\n")
-            f.write("===================================\n")
-            for linea in self.resumen_acciones:
-                f.write(f"- {linea}\n")
-        self.log(f"[INFO] Resumen exportado a {resumen_path}")
+        # Footprint minimo: NO se escribe ningun archivo de resumen/log en disco.
+        # El resumen queda solo en memoria y en el log de la app (consola/GUI).
+        # (El unico archivo que el bot puede crear, aparte de las descargas, es
+        # BOT_error.txt y solo si ocurre un error.)
+        try:
+            self.log(f"[INFO] Resumen ({len(self.resumen_acciones)} acciones) disponible en el log de la app.")
+        except Exception:
+            pass
 
 def main():
     bot = Bot()

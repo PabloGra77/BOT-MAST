@@ -1,6 +1,6 @@
 # Guía de Contribución
 
-¡Gracias por tu interés en contribuir a BOT360!
+¡Gracias por tu interés en contribuir a BOT!
 
 ## 📋 Código de Conducta
 
@@ -13,7 +13,7 @@ Este proyecto adhiere a un código de conducta que todos los contribuidores debe
 
 ### Reportar Bugs
 
-1. Verificar que el bug no está [ya reportado](https://github.com/tu-usuario/bot360/issues)
+1. Verificar que el bug no está [ya reportado](https://github.com/tu-usuario/bot/issues)
 2. Crear un nuevo issue con:
    - **Título claro** describiendo el problema
    - **Descripción detallada**
@@ -143,14 +143,14 @@ def tu_funcion(parametro):
 - **NUNCA** commitear credenciales o secrets
 - Usar `.env` para configuración sensible
 - Validar input del usuario
-- Reportar vulnerabilidades a: security@bot360.local
+- Reportar vulnerabilidades a: security@bot.local
 
 ## 📦 Instalación para Desarrollo
 
 ```bash
 # Clonar repo
-git clone https://github.com/tu-usuario/bot360.git
-cd bot360
+git clone https://github.com/tu-usuario/bot.git
+cd bot
 
 # Entorno virtual
 python -m venv venv
@@ -189,5 +189,5 @@ Todos los contribuidores serán mencionados en:
 
 ---
 
-**¡Gracias por ayudar a mejorar BOT360!** 🙏
+**¡Gracias por ayudar a mejorar BOT!** 🙏
 

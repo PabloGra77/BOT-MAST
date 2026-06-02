@@ -1,4 +1,4 @@
-# 📖 Guía de Uso - GUI Desktop BOT360
+# 📖 Guía de Uso - GUI Desktop BOT
 
 ## 🎯 Inicio
 
@@ -11,14 +11,14 @@ python -m src.ui.desktop_app
 
 **Opción B: Desde ejecutable**
 ```bash
-dist/BOT360/BOT360.exe
+dist/BOT/BOT.exe
 ```
 
 ### 2. Pantalla Principal
 
 ```
 ┌─────────────────────────────────────────────┐
-│ BOT360 - Panel de Control                   │
+│ BOT - Panel de Control                   │
 ├─────────────────────────────────────────────┤
 │ [Archivo] [Herramientas] [Ayuda]            │
 ├─────────────────────────────────────────────┤
@@ -94,7 +94,7 @@ Fecha Fin: 2024-12-31
 
 **Los archivos se guardan en:**
 ```
-BOT360/downloads/hc/
+BOT/downloads/hc/
 ├── HC_123456_Psicologia_2024-01-15.pdf
 ├── HC_123456_Psicologia_2024-02-10.pdf
 └── ...
@@ -293,7 +293,7 @@ tabs.addTab(self.create_mi_tab(), "Mi Tab")
 
 Los logs se guardan en:
 ```
-BOT360/logs/runtime/
+BOT/logs/runtime/
 ├── debug_visor.txt          # Debug detallado
 ├── resumen_ejecucion.txt    # Resumen de jobs
 └── structure_scan.txt       # Estructura de INPEC
@@ -323,7 +323,7 @@ Si prefieres usar API REST en lugar de GUI:
 
 ```bash
 # Iniciar servidor
-python -m src.bot360_app.web.server
+python -m src.bot_app.web.server
 
 # Crear agenda
 curl -X POST http://localhost:5000/api/agenda \
@@ -336,7 +336,7 @@ curl -X POST http://localhost:5000/api/agenda \
 
 ## ✅ Checklist de Inicio
 
-- [ ] Instalar BOT360 correctamente
+- [ ] Instalar BOT correctamente
 - [ ] Copiar `.env.example` a `.env`
 - [ ] Completar credenciales INPEC en `.env`
 - [ ] Instalar Chrome o Edge
@@ -348,5 +348,5 @@ curl -X POST http://localhost:5000/api/agenda \
 
 **Versión:** 1.0.0
 **Última actualización:** 2024-01-06
-**Soporte:** https://github.com/tu-usuario/bot360/issues
+**Soporte:** https://github.com/tu-usuario/bot/issues
 

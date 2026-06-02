@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-BOT360 - Aplicacion Desktop Principal
+BOT - Aplicacion Desktop Principal
 Panel de control con gestion de credenciales y navegadores
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Optional, List
 # Asegurar que src/ este en el path
 # ---------------------------------------------------------------------------
 _SRC_DIR = Path(__file__).resolve().parent.parent   # src/
-_ROOT_DIR = _SRC_DIR.parent                          # BOT360/
+_ROOT_DIR = _SRC_DIR.parent                          # BOT/
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 if str(_ROOT_DIR) not in sys.path:
@@ -24,7 +24,7 @@ if str(_ROOT_DIR) not in sys.path:
 
 # Cuando corre como .exe (PyInstaller), __file__ apunta a la carpeta temporal
 # _MEIxxxx. config/, logs/, downloads/ deben vivir junto al .exe para persistir.
-_BASE_OVERRIDE = os.environ.get("BOT360_BASE_DIR")
+_BASE_OVERRIDE = os.environ.get("BOT_BASE_DIR")
 if _BASE_OVERRIDE:
     _DATA_DIR = Path(_BASE_OVERRIDE).resolve()
 elif getattr(sys, "frozen", False):
@@ -39,7 +39,8 @@ try:
         QTextEdit, QTableWidget, QTableWidgetItem, QMessageBox, QDialog,
         QFormLayout, QDialogButtonBox, QCheckBox, QGroupBox, QFrame,
         QSizePolicy, QSlider, QHeaderView, QAbstractItemView,
-        QListWidget, QListWidgetItem, QStatusBar, QFileDialog, QProgressBar
+        QListWidget, QListWidgetItem, QStatusBar, QFileDialog, QProgressBar,
+        QScrollArea
     )
     from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QDateTime, QSize
     from PyQt6.QtGui import QFont, QTextCursor
@@ -64,7 +65,7 @@ def _save_config(cfg: dict):
         json.dump(cfg, f, indent=4, ensure_ascii=False)
 
 try:
-    from bot360_app.common.settings import CONFIG_PATH as _SP
+    from bot_app.common.settings import CONFIG_PATH as _SP
     def load_main_config() -> dict:
         return _load_config()
     def save_main_config(cfg: dict):
@@ -73,56 +74,97 @@ except ImportError:
     load_main_config = _load_config
     save_main_config = _save_config
 
-VERSION = "10.0.23"
-MAX_BROWSERS = 5
+VERSION = "1.0.0"
+# Repositorio para buscar/descargar nuevas versiones (auto-actualizacion).
+GITHUB_REPO = "PabloGra77/BOT-MAST"
+# Maximo de navegadores/usuarios en paralelo. Cada navegador requiere un
+# usuario INPEC distinto (credenciales_hc) para ser estable.
+MAX_BROWSERS = 8
 
 # ===========================================================================
 # Estilos
 # ===========================================================================
 DARK_STYLE = """
-QMainWindow, QDialog {background-color: #1a1a2e; color: #e0e0e0;}
-QWidget {background-color: #1a1a2e; color: #e0e0e0; font-size: 13px;}
-QTabWidget::pane {border: 1px solid #0f3460; background: #16213e;}
-QTabBar::tab {background: #16213e; color: #a0a0b0; padding: 8px 18px; border: 1px solid #0f3460;}
-QTabBar::tab:selected {background: #0f3460; color: #e94560; font-weight: bold;}
-QTabBar::tab:hover {background: #0f3460; color: #ffffff;}
+* { font-family: "Segoe UI", "Inter", Arial, sans-serif; }
+QMainWindow, QDialog {background-color: #0d1117; color: #e6edf3;}
+QWidget {background-color: #0d1117; color: #e6edf3; font-size: 13px;}
+QToolTip {background: #161b22; color: #e6edf3; border: 1px solid #30363d; padding: 4px;}
+
+/* Pestañas */
+QTabWidget::pane {border: 1px solid #30363d; background: #0d1117; border-radius: 8px; top: -1px;}
+QTabBar::tab {background: transparent; color: #8b949e; padding: 9px 20px; margin-right: 2px;
+    border: none; border-bottom: 2px solid transparent; font-weight: 600;}
+QTabBar::tab:selected {color: #e6edf3; border-bottom: 2px solid #2f81f7;}
+QTabBar::tab:hover {color: #e6edf3;}
+
+/* Botones: por defecto neutro; .primary azul; .success verde; .danger rojo */
 QPushButton {
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #0f3460, stop:1 #0a2444);
-    color: #ffffff; border: 1px solid #e94560; border-radius: 5px;
-    padding: 6px 14px; font-weight: bold;}
-QPushButton:hover {background: #e94560; color: #ffffff;}
-QPushButton:pressed {background: #c73652;}
-QPushButton:disabled {background: #333355; color: #666688; border-color: #444466;}
-QPushButton[class="danger"] {background: #6b1a2a; border-color: #cc2244;}
-QPushButton[class="danger"]:hover {background: #cc2244;}
-QPushButton[class="success"] {background: #1a4a2a; border-color: #22cc44;}
-QPushButton[class="success"]:hover {background: #22cc44; color: #000;}
+    background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 6px; padding: 8px 16px; font-weight: 600;}
+QPushButton:hover {background: #30363d; border-color: #3d444d;}
+QPushButton:pressed {background: #161b22;}
+QPushButton:disabled {background: #161b22; color: #6e7681; border-color: #21262d;}
+QPushButton[class="primary"] {background: #2f81f7; color: #ffffff; border: 1px solid #2f81f7;}
+QPushButton[class="primary"]:hover {background: #388bfd; border-color: #388bfd;}
+QPushButton[class="primary"]:pressed {background: #1f6feb;}
+QPushButton[class="success"] {background: #238636; color: #ffffff; border: 1px solid #2ea043;}
+QPushButton[class="success"]:hover {background: #2ea043;}
+QPushButton[class="danger"] {background: #21262d; color: #f85149; border: 1px solid #da3633;}
+QPushButton[class="danger"]:hover {background: #da3633; color: #ffffff;}
+
+/* Campos */
 QLineEdit, QTextEdit, QComboBox, QSpinBox {
-    background: #16213e; color: #e0e0e0; border: 1px solid #0f3460;
-    border-radius: 4px; padding: 5px;}
-QLineEdit:focus, QComboBox:focus {border-color: #e94560;}
-QGroupBox {border: 1px solid #0f3460; margin-top: 10px; padding-top: 8px;
-    font-weight: bold; color: #e94560;}
-QGroupBox::title {subcontrol-origin: margin; left: 8px; top: -2px; padding: 0 4px;}
-QTableWidget {background: #16213e; color: #e0e0e0; gridline-color: #0f3460;
-    selection-background-color: #e94560; selection-color: #fff;}
-QHeaderView::section {background: #0f3460; color: #e0e0e0; padding: 6px; border: 1px solid #1a2a50;}
-QScrollBar:vertical {background: #16213e; width: 10px;}
-QScrollBar::handle:vertical {background: #0f3460; border-radius: 5px;}
-QCheckBox::indicator {width: 16px; height: 16px; border: 1px solid #0f3460; background: #16213e;}
-QCheckBox::indicator:checked {background: #e94560; border-color: #e94560;}
-QSlider::groove:horizontal {background: #16213e; height: 6px; border-radius: 3px;}
-QSlider::handle:horizontal {background: #e94560; width: 14px; height: 14px;
-    margin: -4px 0; border-radius: 7px;}
-QSlider::sub-page:horizontal {background: #0f3460; border-radius: 3px;}
-QStatusBar {background: #0f3460; color: #a0a0b0; border-top: 1px solid #e94560;}
+    background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 8px; selection-background-color: #1f6feb;}
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus {border: 1px solid #2f81f7;}
+QComboBox::drop-down {border: none; width: 22px;}
+QComboBox QAbstractItemView {background: #161b22; color: #e6edf3; border: 1px solid #30363d;
+    selection-background-color: #2f81f7;}
+
+/* Grupos / tarjetas */
+QGroupBox {background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    margin-top: 14px; padding: 14px 12px 10px 12px; font-weight: 700; color: #e6edf3;}
+QGroupBox::title {subcontrol-origin: margin; left: 12px; top: 2px; padding: 0 6px; color: #8b949e;}
+
+/* Tablas */
+QTableWidget {background: #161b22; color: #e6edf3; gridline-color: #21262d;
+    border: 1px solid #30363d; border-radius: 8px;
+    selection-background-color: #1f6feb; selection-color: #ffffff;}
+QTableWidget::item {padding: 4px;}
+QHeaderView::section {background: #21262d; color: #8b949e; padding: 8px; border: none;
+    border-bottom: 1px solid #30363d; font-weight: 600;}
+
+/* Scrollbars */
+QScrollBar:vertical {background: transparent; width: 12px; margin: 2px;}
+QScrollBar::handle:vertical {background: #30363d; border-radius: 6px; min-height: 30px;}
+QScrollBar::handle:vertical:hover {background: #3d444d;}
+QScrollBar:horizontal {background: transparent; height: 12px; margin: 2px;}
+QScrollBar::handle:horizontal {background: #30363d; border-radius: 6px; min-width: 30px;}
+QScrollBar::add-line, QScrollBar::sub-line {height: 0; width: 0;}
+QScrollBar::add-page, QScrollBar::sub-page {background: transparent;}
+QScrollArea {border: none; background: transparent;}
+
+/* Checks / sliders */
+QCheckBox {spacing: 8px;}
+QCheckBox::indicator {width: 18px; height: 18px; border: 1px solid #30363d; border-radius: 4px; background: #0d1117;}
+QCheckBox::indicator:checked {background: #2f81f7; border-color: #2f81f7;}
+QSlider::groove:horizontal {background: #21262d; height: 6px; border-radius: 3px;}
+QSlider::handle:horizontal {background: #2f81f7; width: 16px; height: 16px;
+    margin: -6px 0; border-radius: 8px;}
+QSlider::sub-page:horizontal {background: #2f81f7; border-radius: 3px;}
+
+/* Barra de estado / progreso */
+QStatusBar {background: #161b22; color: #8b949e; border-top: 1px solid #30363d;}
+QProgressBar {background: #21262d; border: 1px solid #30363d; border-radius: 6px;
+    text-align: center; color: #e6edf3; height: 18px;}
+QProgressBar::chunk {background: #2f81f7; border-radius: 5px;}
 """
 
 
 # ===========================================================================
 # Tab: Credenciales
 # ===========================================================================
-# Valores fijos (siempre los mismos para INPEC360)
+# Valores fijos (siempre los mismos para INPEC)
 INPEC_URL_FIJA   = "https://sisipec.salud360.app/Inpec360/servlet/ingreso"
 INPEC_VERIF_FIJO = "Inpec"
 
@@ -142,8 +184,8 @@ class CredencialesTab(QWidget):
     def _build_ui(self):
         main = QVBoxLayout(self)
 
-        titulo = QLabel("Usuarios INPEC360")
-        titulo.setStyleSheet("color:#e94560; font-size:16px; font-weight:bold;")
+        titulo = QLabel("Usuarios INPEC")
+        titulo.setStyleSheet("color:#2f81f7; font-size:16px; font-weight:bold;")
         main.addWidget(titulo)
 
         info = QLabel(
@@ -154,7 +196,7 @@ class CredencialesTab(QWidget):
             "Los datos se guardan automáticamente en config.json y persisten al cerrar."
         )
         info.setWordWrap(True)
-        info.setStyleSheet("color:#8888cc; font-size:11px; padding:4px;")
+        info.setStyleSheet("color:#8b949e; font-size:11px; padding:4px;")
         main.addWidget(info)
 
         self.lbl_count = QLabel("Sin usuarios guardados.")
@@ -191,7 +233,7 @@ class CredencialesTab(QWidget):
         main.addLayout(rb)
 
         self.lbl_st = QLabel("")
-        self.lbl_st.setStyleSheet("color:#22cc44; font-size:11px;")
+        self.lbl_st.setStyleSheet("color:#3fb950; font-size:11px;")
         main.addWidget(self.lbl_st)
         main.addStretch()
 
@@ -230,7 +272,7 @@ class CredencialesTab(QWidget):
                 "background:#0d1117; border:1px solid #22c55e; border-radius:6px;"
             )
 
-    def _status(self, msg, color="#22cc44"):
+    def _status(self, msg, color="#3fb950"):
         self.lbl_st.setText(msg)
         self.lbl_st.setStyleSheet(f"color:{color}; font-size:11px;")
 
@@ -347,7 +389,7 @@ class CredencialesTab(QWidget):
 class _CredDialog(QDialog):
     def __init__(self, parent=None, data=None):
         super().__init__(parent)
-        self.setWindowTitle("Usuario INPEC360 — Navegador")
+        self.setWindowTitle("Usuario INPEC — Navegador")
         self.setMinimumWidth(440)
         self.setStyleSheet(DARK_STYLE)
         d = data or {}
@@ -358,7 +400,7 @@ class _CredDialog(QDialog):
             f"• Verificación: <b>{INPEC_VERIF_FIJO}</b>  (automática)\n"
             f"• URL: <code>{INPEC_URL_FIJA}</code>  (automática)"
         )
-        info.setStyleSheet("color:#8888cc; font-size:11px; padding:4px;")
+        info.setStyleSheet("color:#8b949e; font-size:11px; padding:4px;")
         info.setWordWrap(True)
         lay.addWidget(info)
 
@@ -437,7 +479,7 @@ class NavegadoresTab(QWidget):
             "Cada navegador ejecuta una sesion independiente.\n"
             "Mas navegadores = mayor paralelismo pero mas uso de CPU/RAM."
         )
-        lbl_info.setStyleSheet("color:#8888cc; font-size:11px;")
+        lbl_info.setStyleSheet("color:#8b949e; font-size:11px;")
         vl2.addWidget(lbl_info)
 
         row_sl = QHBoxLayout()
@@ -449,7 +491,7 @@ class NavegadoresTab(QWidget):
         self.sld.setTickInterval(1)
         self.sld.valueChanged.connect(self._on_slide)
         self.lbl_n = QLabel("1")
-        self.lbl_n.setStyleSheet("color:#e94560; font-size:26px; font-weight:bold;")
+        self.lbl_n.setStyleSheet("color:#2f81f7; font-size:26px; font-weight:bold;")
         self.lbl_n.setFixedWidth(36)
         self.lbl_n.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row_sl.addWidget(self.sld)
@@ -463,14 +505,14 @@ class NavegadoresTab(QWidget):
             ico = QLabel("O")
             ico.setFixedSize(QSize(44, 44))
             ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            ico.setStyleSheet("font-size:22px; background:#16213e; border-radius:8px; border:1px solid #333355;")
+            ico.setStyleSheet("font-size:22px; background:#161b22; border-radius:8px; border:1px solid #30363d;")
             self._icons.append(ico)
             self.icons_row.addWidget(ico)
         self.icons_row.addStretch()
         vl2.addLayout(self.icons_row)
 
         self.lbl_req = QLabel("")
-        self.lbl_req.setStyleSheet("color:#8888cc; font-size:11px; font-style:italic;")
+        self.lbl_req.setStyleSheet("color:#8b949e; font-size:11px; font-style:italic;")
         self.lbl_req.setWordWrap(True)
         vl2.addWidget(self.lbl_req)
 
@@ -511,14 +553,14 @@ class NavegadoresTab(QWidget):
             "Pulsa el boton para escanear CPU, RAM y disco y obtener "
             "una recomendacion del numero de navegadores en paralelo."
         )
-        self.lbl_cap_info.setStyleSheet("color:#aaccee; font-size:11px;")
+        self.lbl_cap_info.setStyleSheet("color:#8b949e; font-size:11px;")
         self.lbl_cap_info.setWordWrap(True)
         vl_cap.addWidget(self.lbl_cap_info)
 
         self.lbl_cap_result = QLabel("")
         self.lbl_cap_result.setStyleSheet(
-            "font-size:12px; padding:6px; background:#16213e; "
-            "border:1px solid #444477; border-radius:6px;"
+            "font-size:12px; padding:6px; background:#161b22; "
+            "border:1px solid #30363d; border-radius:6px;"
         )
         self.lbl_cap_result.setWordWrap(True)
         self.lbl_cap_result.setVisible(False)
@@ -536,6 +578,20 @@ class NavegadoresTab(QWidget):
         row_cap.addWidget(self.btn_apply_cap)
         vl_cap.addLayout(row_cap)
         self._recomendado = None
+
+        # Boton para liberar RAM cerrando apps del usuario no esenciales.
+        row_force = QHBoxLayout()
+        self.btn_forzar = QPushButton("Forzar Equipo (cerrar apps y liberar RAM)")
+        self.btn_forzar.setProperty("class", "danger")
+        self.btn_forzar.setToolTip(
+            "Cierra las aplicaciones abiertas del usuario (navegadores, Office, etc.)\n"
+            "para liberar RAM y dedicar el equipo al bot.\n"
+            "NO toca procesos del sistema de Windows ni el propio bot.\n"
+            "Guarda tu trabajo antes de usarlo."
+        )
+        self.btn_forzar.clicked.connect(self._forzar_equipo)
+        row_force.addWidget(self.btn_forzar)
+        vl_cap.addLayout(row_force)
         # =====================================================================
 
         row_save = QHBoxLayout()
@@ -547,7 +603,7 @@ class NavegadoresTab(QWidget):
         main.addLayout(row_save)
 
         self.lbl_st = QLabel("")
-        self.lbl_st.setStyleSheet("color:#22cc44; font-size:11px;")
+        self.lbl_st.setStyleSheet("color:#3fb950; font-size:11px;")
         main.addWidget(self.lbl_st)
         main.addStretch()
 
@@ -559,13 +615,13 @@ class NavegadoresTab(QWidget):
         for i, ico in enumerate(self._icons):
             if i < v:
                 ico.setStyleSheet(
-                    "font-size:22px; background:#0f3460; border-radius:8px; "
-                    "border:2px solid #e94560; color:#e0e0e0;"
+                    "font-size:22px; background:#30363d; border-radius:8px; "
+                    "border:2px solid #2f81f7; color:#e6edf3;"
                 )
             else:
                 ico.setStyleSheet(
-                    "font-size:22px; background:#16213e; border-radius:8px; "
-                    "border:1px solid #333355; color:#444;"
+                    "font-size:22px; background:#161b22; border-radius:8px; "
+                    "border:1px solid #30363d; color:#444;"
                 )
         if v == 1:
             self.lbl_req.setText("Con 1 navegador solo se necesita la credencial principal.")
@@ -655,13 +711,23 @@ class NavegadoresTab(QWidget):
             QMessageBox.critical(self, "Error de escaneo", f"No se pudo leer info del sistema:\n{exc}")
             return
 
-        # Reglas de recomendacion (Chrome/Edge consume ~600-900 MB y ~0.7 CPU
-        # por sesion en promedio mientras navega Inpec360).
-        ram_para_bot_gb = max(0.5, ram_libre_gb - 1.5)   # dejar 1.5 GB libres
-        cap_por_ram = int(ram_para_bot_gb // 1.0)        # 1 GB por navegador
+        # Reglas de recomendacion. Un navegador (1 pestaña automatizando INPEC)
+        # consume ~0.7-0.9 GB de RAM. El factor que casi siempre manda es la RAM
+        # LIBRE en el momento del escaneo (no la CPU).
+        ram_para_bot_gb = max(0.5, ram_libre_gb - 1.0)   # dejar 1.0 GB libre de colchon
+        cap_por_ram = int(ram_para_bot_gb // 0.85)       # ~0.85 GB por navegador
         cap_por_cpu = max(1, cpu_logicos // 2)           # 2 hilos logicos por nav
-        cap_por_load = max(1, int((100 - cpu_uso) / 25)) # CPU ya ocupada penaliza
+        # La CPU solo penaliza si esta GENUINAMENTE ocupada (>60%). Una carga
+        # momentanea baja no debe limitar un equipo con muchos nucleos.
+        if cpu_uso >= 60:
+            cap_por_load = max(1, int((100 - cpu_uso) / 15))
+        else:
+            cap_por_load = cap_por_cpu
         recomendado = max(1, min(MAX_BROWSERS, cap_por_ram, cap_por_cpu, cap_por_load))
+
+        # Determinar el factor limitante para mostrarlo (transparencia).
+        _factores = {"RAM disponible": cap_por_ram, "nucleos de CPU": cap_por_cpu, "carga de CPU": cap_por_load}
+        factor_limite = min(_factores, key=_factores.get)
 
         if disco_libre_gb < 2:
             recomendado = 1
@@ -675,13 +741,13 @@ class NavegadoresTab(QWidget):
         # Categoria del equipo
         if recomendado >= 4:
             categoria = "ALTA"
-            color = "#22cc55"
+            color = "#3fb950"
         elif recomendado >= 2:
             categoria = "MEDIA"
-            color = "#e0b020"
+            color = "#d29922"
         else:
             categoria = "BASICA"
-            color = "#e94560"
+            color = "#2f81f7"
 
         html = (
             f"<div style='color:{color}; font-weight:bold; font-size:13px;'>"
@@ -693,9 +759,16 @@ class NavegadoresTab(QWidget):
             f"&middot; uso actual: {cpu_uso:.0f}%<br>"
             f"<b>RAM:</b> {ram_libre_gb:.1f} GB libres / {ram_total_gb:.1f} GB totales<br>"
             f"<b>Disco (perfil):</b> {disco_libre_gb:.1f} GB libres{warn_disco}<br>"
+            f"<b>Factor limitante:</b> {factor_limite}<br>"
             f"<br>"
-            f"<i>Cada navegador usa ~1 GB RAM y ~2 hilos logicos. "
-            f"Si el PC se siente lento, reduce a {max(1, recomendado-1)}.</i>"
+            + (
+                f"<i>El limite es la <b>RAM libre</b> ({ram_libre_gb:.1f} GB). "
+                f"Cierra otros programas y vuelve a escanear para permitir mas "
+                f"navegadores (cada uno usa ~0.85 GB).</i>"
+                if factor_limite == "RAM disponible" else
+                f"<i>Cada navegador usa ~0.85 GB RAM y ~2 hilos logicos. "
+                f"Si el PC se siente lento, reduce a {max(1, recomendado-1)}.</i>"
+            )
         )
         self.lbl_cap_result.setText(html)
         self.lbl_cap_result.setVisible(True)
@@ -707,6 +780,136 @@ class NavegadoresTab(QWidget):
         self.sld.setValue(v)
         self._on_slide(v)
         self.lbl_st.setText(f"Aplicada recomendacion: {v} navegador(es). Recuerda Guardar.")
+
+    # Lista BLANCA de aplicaciones pesadas del usuario que SÍ se cierran al
+    # "Forzar Equipo" (en minusculas, con .exe). Son los grandes consumidores de
+    # RAM. NO se tocan drivers (audio/touchpad/GPU), seguridad/VPN, OneDrive,
+    # agentes de trabajo (UiPath) ni procesos del sistema.
+    _PROC_CERRAR = {
+        # Navegadores y motores web embebidos
+        "chrome.exe", "msedge.exe", "msedgewebview2.exe", "firefox.exe",
+        "opera.exe", "opera_gx.exe", "brave.exe", "vivaldi.exe", "iexplore.exe",
+        "chromium.exe", "browser.exe",
+        # Microsoft Office / correo
+        "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "olk.exe",
+        "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe", "winproj.exe",
+        "m365copilot.exe",
+        # Comunicaciones
+        "teams.exe", "ms-teams.exe", "slack.exe", "discord.exe", "zoom.exe",
+        "skype.exe", "telegram.exe", "whatsapp.exe", "webex.exe", "webexmta.exe",
+        # Multimedia
+        "spotify.exe", "spotifylauncher.exe", "vlc.exe", "itunes.exe",
+        "wmplayer.exe", "groove.exe",
+        # IA / notas / PDF / creatividad
+        "chatgpt.exe", "claude.exe", "notion.exe", "obsidian.exe", "evernote.exe",
+        "acrobat.exe", "acrord32.exe", "photoshop.exe", "illustrator.exe",
+        # Juegos / tiendas / nube (grandes consumidores)
+        "steam.exe", "steamwebhelper.exe", "epicgameslauncher.exe",
+        "battle.net.exe", "dropbox.exe",
+        # Utilidades varias
+        "ccleaner.exe",
+    }
+
+    def _forzar_equipo(self):
+        """Cierra apps PESADAS del usuario (lista blanca) para liberar RAM y
+        dedicar el equipo al bot. Salvaguardas: solo cierra apps de la lista
+        blanca, solo del usuario actual (nunca SYSTEM/SERVICE), nunca el propio
+        proceso ni sus ancestros. NO toca drivers, seguridad, VPN ni OneDrive."""
+        try:
+            import psutil
+        except ImportError:
+            QMessageBox.critical(self, "psutil no instalado", "Falta el modulo 'psutil'.")
+            return
+
+        resp = QMessageBox.warning(
+            self, "Forzar Equipo",
+            "Esto CERRARA las aplicaciones pesadas abiertas (navegadores, Office, "
+            "Teams/Slack, Spotify, etc.) para liberar RAM y dedicar el equipo al bot.\n\n"
+            "• NO cierra Windows, drivers, antivirus/VPN, OneDrive ni el propio bot.\n"
+            "• GUARDA tu trabajo antes: lo no guardado se PIERDE.\n"
+            "• Hazlo ANTES de iniciar el bot (tambien cierra navegadores).\n\n"
+            "¿Continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+
+        # Usuario actual y arbol propio de procesos (no cerrarse a si mismo).
+        protegidos_pids = set()
+        usuario_actual = ""
+        try:
+            yo = psutil.Process(os.getpid())
+            usuario_actual = (yo.username() or "").lower()
+            p = yo
+            for _ in range(12):  # tope defensivo
+                if p is None:
+                    break
+                protegidos_pids.add(p.pid)
+                try:
+                    p = p.parent()
+                except Exception:
+                    break
+        except Exception:
+            pass
+
+        mem_antes = psutil.virtual_memory().available / (1024 ** 3)
+
+        objetivos = []  # [(proc, nombre)]
+        for proc in psutil.process_iter(["pid", "name", "username"]):
+            try:
+                pid = proc.info.get("pid")
+                nombre = (proc.info.get("name") or "")
+                nl = nombre.lower()
+                if not pid or pid in protegidos_pids:
+                    continue
+                # Solo apps de la lista blanca.
+                if nl not in self._PROC_CERRAR:
+                    continue
+                uname = (proc.info.get("username") or "").lower()
+                # CLAVE: solo procesos del usuario actual (jamas SYSTEM/SERVICE).
+                if not usuario_actual or uname != usuario_actual:
+                    continue
+                objetivos.append((proc, nombre))
+            except Exception:
+                continue
+
+        # Cierre suave (terminate) y luego forzado (kill) de lo que quede.
+        cerrados = []
+        for proc, nombre in objetivos:
+            try:
+                proc.terminate()
+                cerrados.append(nombre)
+            except Exception:
+                pass
+        try:
+            _gone, vivos = psutil.wait_procs([p for p, _ in objetivos], timeout=3)
+            for proc in vivos:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        mem_despues = psutil.virtual_memory().available / (1024 ** 3)
+        from collections import Counter
+        conteo = Counter(c.lower() for c in cerrados)
+        detalle = ", ".join(
+            (f"{n} (x{c})" if c > 1 else n) for n, c in sorted(conteo.items())
+        ) or "ninguna"
+
+        QMessageBox.information(
+            self, "Forzar Equipo",
+            f"Aplicaciones cerradas: {len(cerrados)}\n"
+            f"RAM libre: {mem_antes:.1f} GB  ->  {mem_despues:.1f} GB\n\n"
+            f"Cerradas: {detalle}\n\n"
+            f"Se vuelve a escanear la capacidad automaticamente."
+        )
+        try:
+            self.escanear_capacidad()
+        except Exception:
+            pass
 
 
 # ===========================================================================
@@ -720,29 +923,29 @@ class DashboardTab(QWidget):
     def _build_ui(self):
         lay = QVBoxLayout(self)
 
-        hdr = QLabel("BOT360  |  Panel de Control")
+        hdr = QLabel("BOT  |  Panel de Control")
         hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hdr.setStyleSheet("color:#e94560; font-size:22px; font-weight:bold; margin-bottom:4px;")
+        hdr.setStyleSheet("color:#2f81f7; font-size:22px; font-weight:bold; margin-bottom:4px;")
         lay.addWidget(hdr)
 
         sub = QLabel("Automatizacion de Agendas y Gestion de Historias Clinicas")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet("color:#8888cc; font-size:13px; margin-bottom:12px;")
+        sub.setStyleSheet("color:#8b949e; font-size:13px; margin-bottom:12px;")
         lay.addWidget(sub)
 
         cards = QHBoxLayout()
         for titulo, val, col in [
-            ("Version", VERSION, "#e94560"),
-            ("Estado",  "Listo", "#22cc44"),
+            ("Version", VERSION, "#2f81f7"),
+            ("Estado",  "Listo", "#3fb950"),
         ]:
             fr = QFrame()
-            fr.setStyleSheet(f"background:#16213e; border:1px solid {col}; border-radius:8px; padding:4px;")
+            fr.setStyleSheet(f"background:#161b22; border:1px solid {col}; border-radius:8px; padding:4px;")
             cv = QVBoxLayout(fr)
             lv = QLabel(val)
             lv.setStyleSheet(f"color:{col}; font-size:20px; font-weight:bold;")
             lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lt = QLabel(titulo)
-            lt.setStyleSheet("color:#a0a0b0; font-size:11px;")
+            lt.setStyleSheet("color:#8b949e; font-size:11px;")
             lt.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cv.addWidget(lv); cv.addWidget(lt)
             cards.addWidget(fr)
@@ -755,7 +958,7 @@ class DashboardTab(QWidget):
         self.log_box.setReadOnly(True)
         self.log_box.setMaximumHeight(130)
         self.log_box.setStyleSheet(
-            "background:#0a1020; color:#22cc44; font-family:Consolas,monospace; font-size:11px;"
+            "background:#0d1117; color:#3fb950; font-family:Consolas,monospace; font-size:11px;"
         )
         gl.addWidget(self.log_box)
 
@@ -805,7 +1008,7 @@ class AgendaTab(QWidget):
         lay.addWidget(QLabel("Log:"))
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setStyleSheet("background:#0a1020; color:#22cc44; font-family:Consolas,monospace; font-size:11px;")
+        self.log.setStyleSheet("background:#0d1117; color:#3fb950; font-family:Consolas,monospace; font-size:11px;")
         lay.addWidget(self.log)
 
     def _run(self):
@@ -876,7 +1079,12 @@ class _HCWorker(QThread):
                 info = ""
             self.finished_ok.emit(True, info)
         except Exception as ex:
+            import traceback as _tb
+            detalle = "".join(_tb.format_exception(type(ex), ex, ex.__traceback__))
             self.log_message.emit(f"[ERROR] {ex}")
+            ruta = _escribir_error_txt("Error durante la descarga de HC", detalle)
+            if ruta:
+                self.log_message.emit(f"[ERROR] Detalle exacto guardado en: {ruta}")
             self.finished_ok.emit(False, str(ex))
 
 
@@ -972,7 +1180,7 @@ class HCTab(QWidget):
 
         # Contador
         self.lbl_conteo = QLabel("0 pacientes cargados")
-        self.lbl_conteo.setStyleSheet("color:#aaaaaa; font-size:11px;")
+        self.lbl_conteo.setStyleSheet("color:#8b949e; font-size:11px;")
         vmas.addWidget(self.lbl_conteo)
 
         # ── Dashboard de progreso (en vivo) ─────────────────────────────
@@ -985,11 +1193,11 @@ class HCTab(QWidget):
         dash_lay.setVerticalSpacing(8)
         self._stats_labels: dict = {}
         cards_def = [
-            ("total",       "Total",       "#3b82f6"),
+            ("total",       "Total",       "#2f81f7"),
             ("completados", "Con soporte", "#22c55e"),
             ("sin_hc",      "Sin HC",      "#eab308"),
             ("fallidos",    "Fallidos",    "#ef4444"),
-            ("validados",   "PDFs OK",     "#a855f7"),
+            ("validados",   "PDFs OK",     "#2f81f7"),
             ("restantes",   "Pendientes",  "#f59e0b"),
             ("actual",      "Actual",      "#06b6d4"),
         ]
@@ -1011,7 +1219,7 @@ class HCTab(QWidget):
             lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lv.setWordWrap(True)
             lt = QLabel(titulo)
-            lt.setStyleSheet("color:#a0a0b0; font-size:10px;")
+            lt.setStyleSheet("color:#8b949e; font-size:10px;")
             lt.setAlignment(Qt.AlignmentFlag.AlignCenter)
             v.addWidget(lv); v.addWidget(lt)
             self._stats_labels[key] = lv
@@ -1073,7 +1281,7 @@ class HCTab(QWidget):
         lay.addWidget(QLabel("Log:"))
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setStyleSheet("background:#0a1020; color:#22cc44; font-family:Consolas,monospace; font-size:11px;")
+        self.log.setStyleSheet("background:#0d1117; color:#3fb950; font-family:Consolas,monospace; font-size:11px;")
         self.log.setMaximumHeight(130)
         lay.addWidget(self.log)
 
@@ -1097,9 +1305,16 @@ class HCTab(QWidget):
             if p.suffix.lower() in (".xlsx", ".xls"):
                 try:
                     import pandas as pd
-                    df = pd.read_excel(path, dtype=str)
-                except Exception:
-                    self.log.append("[ERROR] No se pudo leer el Excel. Verifica que pandas y openpyxl esten instalados.")
+                    df = pd.read_excel(path, dtype=str, engine="openpyxl")
+                except Exception as ex_xlsx:
+                    detalle = str(ex_xlsx)
+                    self.log.append(f"[ERROR] No se pudo leer el Excel: {detalle}")
+                    _escribir_error_txt("Error al leer Excel de pacientes", detalle)
+                    QMessageBox.critical(
+                        self, "Error al leer Excel",
+                        f"No se pudo leer el archivo Excel.\n\nDetalle:\n{detalle}\n\n"
+                        "Sugerencia: vuelve a guardar el archivo como .xlsx, o "
+                        "exportalo a CSV y cargalo asi.")
                     return
             else:
                 try:
@@ -1480,6 +1695,13 @@ class HCTab(QWidget):
 
     def _on_finished(self, ok, info):
         self._stats_labels["actual"].setText("—")
+        # Resetear estado del boton Detener
+        try:
+            self.btn_detener.setText("Detener")
+            self.btn_detener.setEnabled(True)
+            self._stop_click_count = 0
+        except Exception:
+            pass
         # Liberar el bloqueo de suspensión al terminar
         try:
             if hasattr(self, "btn_keep_awake") and self.btn_keep_awake.isChecked():
@@ -1499,18 +1721,62 @@ class HCTab(QWidget):
 
     def _detener_masiva(self):
         if not self._worker or not self._worker.isRunning():
+            # Reset visual por si quedo en estado intermedio
+            try:
+                self.btn_detener.setText("Detener")
+                self.btn_detener.setEnabled(True)
+                self._stop_click_count = 0
+            except Exception:
+                pass
             QMessageBox.information(self, "Sin proceso", "No hay descarga masiva en curso.")
             return
-        self.log.append("[STOP] Solicitando detener (terminará tras paciente actual)...")
-        try:
-            self._worker.stop()
-            # Habilitar boton Continuar para reanudar despues
+
+        # Escalado: 1er click = soft stop, 2do click = forzar terminacion del hilo.
+        if not hasattr(self, "_stop_click_count"):
+            self._stop_click_count = 0
+        self._stop_click_count += 1
+
+        if self._stop_click_count == 1:
+            self.log.append("[STOP] Solicitando detener (rompe sub-loops y termina tras tarea actual). Pulsa de nuevo para FORZAR cierre.")
             try:
+                self._worker.stop()
+            except Exception as ex:
+                self.log.append(f"[STOP] Error señalando detener: {ex}")
+            try:
+                self.btn_detener.setText("Forzar parada")
                 self.btn_continuar.setEnabled(True)
             except Exception:
                 pass
+            return
+
+        # Segundo click: forzar
+        confirmar = QMessageBox.question(
+            self, "Forzar parada",
+            "Esto matará el hilo de descarga inmediatamente.\n"
+            "Puede dejar el navegador abierto y archivos parciales.\n\n¿Continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmar != QMessageBox.StandardButton.Yes:
+            return
+        self.log.append("[STOP] FORZANDO terminación del hilo de descarga...")
+        try:
+            self._worker.requestInterruption()
+        except Exception:
+            pass
+        try:
+            self._worker.terminate()
+            self._worker.wait(3000)
         except Exception as ex:
-            self.log.append(f"[STOP] Error señalando detener: {ex}")
+            self.log.append(f"[STOP] Error forzando: {ex}")
+        try:
+            self.btn_detener.setText("Detener")
+            self.btn_detener.setEnabled(True)
+            self.btn_continuar.setEnabled(True)
+            self._stop_click_count = 0
+        except Exception:
+            pass
+        self.log.append("[STOP] Hilo terminado a la fuerza. Puedes pulsar Continuar para reanudar.")
 
     def _continuar_masiva(self):
         """Reanuda la descarga masiva tomando solo los pacientes que aun NO
@@ -1783,31 +2049,53 @@ class HCTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"BOT360  v{VERSION}  —  Panel de Control")
-        self.setMinimumSize(1000, 680)
+        self.setWindowTitle(f"BOT  v{VERSION}  —  Panel de Control")
+        # Minimo modesto para que entre en pantallas pequenas (1366x768) sin
+        # recortar nada: el contenido SCROLLEA en vez de esconder botones.
+        self.setMinimumSize(820, 560)
+        self.resize(1120, 760)
         self.setStyleSheet(DARK_STYLE)
         self._build_ui()
         self._build_menu()
         sb = QStatusBar()
         self.setStatusBar(sb)
-        sb.showMessage(f"BOT360 v{VERSION} — Listo")
+        sb.showMessage(f"BOT v{VERSION} — Listo")
         self.show()
+        # Chequeo automatico de nueva version al iniciar (no molesta si esta al
+        # dia; solo ofrece actualizar si hay una version mas reciente).
+        try:
+            QTimer.singleShot(3000, self._check_updates)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _scrollable(widget):
+        """Envuelve un widget en un area con scroll vertical para que, si la
+        ventana es pequena, el contenido se desplace en vez de recortarse
+        (evita que los botones se escondan o se distorsione el layout)."""
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.Shape.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        sa.setWidget(widget)
+        return sa
 
     def _build_ui(self):
         cw = QWidget()
         self.setCentralWidget(cw)
         vl = QVBoxLayout(cw)
-        vl.setContentsMargins(8, 8, 8, 4)
+        vl.setContentsMargins(10, 10, 10, 6)
         tabs = QTabWidget()
+        tabs.setDocumentMode(True)
         vl.addWidget(tabs)
         self.tab_dash  = DashboardTab()
         self.tab_cred  = CredencialesTab()
         self.tab_nav   = NavegadoresTab()
         self.tab_hc    = HCTab()
-        tabs.addTab(self.tab_dash,  "Dashboard")
-        tabs.addTab(self.tab_cred,  "Credenciales")
-        tabs.addTab(self.tab_nav,   "Navegadores")
-        tabs.addTab(self.tab_hc,    "Historia Clinica")
+        tabs.addTab(self._scrollable(self.tab_dash),  "Dashboard")
+        tabs.addTab(self._scrollable(self.tab_cred),  "Credenciales")
+        tabs.addTab(self._scrollable(self.tab_nav),   "Navegadores")
+        tabs.addTab(self._scrollable(self.tab_hc),    "Historia Clinica")
 
     def _build_menu(self):
         mb = self.menuBar()
@@ -1830,14 +2118,22 @@ class MainWindow(QMainWindow):
         ma.addAction("Salir", self.close)
         mh = mb.addMenu("Herramientas")
         mh.addAction("Verificar Navegadores", self.tab_nav.check_browsers)
-        mh.addAction("Abrir Logs", lambda: os.startfile(str(_ROOT_DIR / "logs" / "runtime")))
-        mh.addAction("Abrir Descargas", lambda: os.startfile(str(_ROOT_DIR / "downloads")))
+        mh.addAction("Abrir carpeta del programa", lambda: self._abrir_carpeta(_DATA_DIR))
+        mh.addAction("Abrir Descargas", lambda: self._abrir_carpeta(_DATA_DIR / "downloads"))
         mh.addSeparator()
         mh.addAction("Buscar Actualizaciones", self._check_updates)
         my = mb.addMenu("Ayuda")
         my.addAction("Descargar Plantilla Excel", self._descargar_plantilla)
         my.addSeparator()
         my.addAction("Acerca de", self._about)
+
+    def _abrir_carpeta(self, ruta):
+        try:
+            ruta = Path(ruta)
+            ruta.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(ruta))
+        except Exception as ex:
+            QMessageBox.warning(self, "Abrir carpeta", f"No se pudo abrir:\n{ruta}\n\n{ex}")
 
     def _save_all(self):
         self.tab_cred.save_main_cred()
@@ -1859,7 +2155,7 @@ class MainWindow(QMainWindow):
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Guardar plantilla Excel",
-            str(Path.home() / "Downloads" / "PLANTILLA_BOT360.xlsx"),
+            str(Path.home() / "Downloads" / "PLANTILLA_BOT.xlsx"),
             "Excel (*.xlsx)"
         )
         if not path:
@@ -1893,7 +2189,7 @@ class MainWindow(QMainWindow):
             inst = [
                 ["Columna", "Obligatoria", "Descripcion"],
                 ["CC", "SI", "Cedula del paciente."],
-                ["SERVICIO", "Recomendado", "Nombre EXACTO del servicio en INPEC360."],
+                ["SERVICIO", "Recomendado", "Nombre EXACTO del servicio en INPEC."],
                 ["ESTRATEGIA", "No", "RECIENTE | ANTIGUA | RANGO FECHAS | EVOLUCION | VALORACION | PRIMERA VEZ."],
                 ["FECHA INICIO", "No*", "DD/MM/YYYY. Si vacia se usa la fecha global del UI."],
                 ["FECHA FIN", "No*", "DD/MM/YYYY. Si vacia se usa la fecha global del UI."],
@@ -1928,7 +2224,7 @@ class MainWindow(QMainWindow):
 
     def _check_updates(self):
         self.statusBar().showMessage("Verificando actualizaciones...")
-        UPDATE_URL = "https://api.github.com/repos/PabloGra77/BOT-HC/releases/latest"
+        UPDATE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
         def do_check():
             try:
@@ -1953,7 +2249,7 @@ class MainWindow(QMainWindow):
                     (a for a in assets if a.get("name", "").lower().endswith(".exe")), None
                 )
                 download_url = exe_asset["browser_download_url"] if exe_asset else None
-                total_size   = exe_asset.get("size", 0) if exe_asset else 0
+                total_size   = (exe_asset.get("size") or 0) if exe_asset else 0
 
                 def ask():
                     self.statusBar().showMessage(f"Nueva versión disponible: v{latest}")
@@ -1962,7 +2258,14 @@ class MainWindow(QMainWindow):
                         QMessageBox.information(self, "Actualización disponible",
                             f"Nueva versión: v{latest}\nActual: v{VERSION}\n\n"
                             "No se encontró el .exe para descarga directa.\n"
-                            "Descárgala en:\nhttps://github.com/PabloGra77/BOT-HC/releases")
+                            f"Descárgala en:\nhttps://github.com/{GITHUB_REPO}/releases")
+                        return
+
+                    if not getattr(sys, "frozen", False):
+                        QMessageBox.information(self, "Actualización disponible",
+                            f"Nueva versión: v{latest}  (actual: v{VERSION})\n\n"
+                            "Estás ejecutando desde código fuente: actualiza con git.\n"
+                            f"Release: https://github.com/{GITHUB_REPO}/releases")
                         return
 
                     r = QMessageBox.question(self, "Actualización disponible",
@@ -1978,7 +2281,7 @@ class MainWindow(QMainWindow):
                     def download_and_replace():
                         try:
                             # 1. Descargar nuevo .exe a archivo temporal
-                            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".exe", prefix="BOT360_new_")
+                            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".exe", prefix="BOT_new_")
                             os.close(tmp_fd)
                             received = 0
 
@@ -2001,7 +2304,7 @@ class MainWindow(QMainWindow):
                                                else __file__).resolve()
 
                             # 3. Crear script batch que espera cierre, reemplaza y relanza
-                            bat_fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="bot360_upd_")
+                            bat_fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="bot_upd_")
                             os.close(bat_fd)
                             bat_content = (
                                 "@echo off\n"
@@ -2039,8 +2342,8 @@ class MainWindow(QMainWindow):
 
     def _about(self):
         QMessageBox.about(
-            self, "Acerca de BOT360",
-            f"<b>BOT360</b> v{VERSION}<br><br>"
+            self, "Acerca de BOT",
+            f"<b>BOT</b> v{VERSION}<br><br>"
             "Automatizacion de Agendas y Gestion de HC.<br>"
             "Python 3.9+  |  PyQt6  |  Selenium<br><br>"
             "Licencia: MIT"
@@ -2048,7 +2351,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         r = QMessageBox.question(
-            self, "Salir", "Deseas cerrar BOT360?",
+            self, "Salir", "Deseas cerrar BOT?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         event.accept() if r == QMessageBox.StandardButton.Yes else event.ignore()
@@ -2057,12 +2360,72 @@ class MainWindow(QMainWindow):
 # ===========================================================================
 # Entry point
 # ===========================================================================
+def _escribir_error_txt(titulo: str, detalle: str) -> str:
+    """Escribe el UNICO archivo que el bot crea ante un error: BOT_error.txt,
+    junto al ejecutable, con el error EXACTO. No crea carpetas ni nada mas.
+    Devuelve la ruta escrita (o '' si no se pudo)."""
+    try:
+        import datetime as _dt
+        ruta = _DATA_DIR / "BOT_error.txt"
+        sello = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(f"BOT v{VERSION} - ERROR\n")
+            f.write(f"Fecha: {sello}\n")
+            f.write(f"{titulo}\n")
+            f.write("=" * 60 + "\n")
+            f.write(detalle.rstrip() + "\n")
+        return str(ruta)
+    except Exception:
+        return ""
+
+
+def _instalar_manejador_errores():
+    """Captura cualquier excepcion NO controlada y la vuelca a BOT_error.txt
+    (en vez de crashear en silencio en otro PC)."""
+    import traceback
+
+    def _hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        detalle = "".join(traceback.format_exception(exc_type, exc, tb))
+        ruta = _escribir_error_txt("Excepcion no controlada", detalle)
+        try:
+            from PyQt6.QtWidgets import QApplication as _QApp, QMessageBox as _QMB
+            if _QApp.instance() is not None:
+                _QMB.critical(None, "Error", f"Ocurrio un error.\nDetalle guardado en:\n{ruta or 'BOT_error.txt'}")
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+
+
 def main():
-    app = QApplication(sys.argv)
-    app.setApplicationName("BOT360")
-    app.setApplicationVersion(VERSION)
-    win = MainWindow()
-    sys.exit(app.exec())
+    _instalar_manejador_errores()
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("BOT")
+        app.setApplicationVersion(VERSION)
+        win = MainWindow()
+        sys.exit(app.exec())
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        import traceback
+        ruta = _escribir_error_txt(
+            "Fallo al iniciar la aplicacion",
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        )
+        # Intentar avisar visualmente; si ni eso se puede, queda el txt.
+        try:
+            from PyQt6.QtWidgets import QApplication as _QApp, QMessageBox as _QMB
+            _app = _QApp.instance() or _QApp(sys.argv)
+            _QMB.critical(None, "Error al iniciar",
+                          f"No se pudo iniciar BOT.\nError guardado en:\n{ruta or 'BOT_error.txt'}")
+        except Exception:
+            pass
+        raise
+
 
 if __name__ == "__main__":
     main()

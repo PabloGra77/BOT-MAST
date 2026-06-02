@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-🚀 INICIO RÁPIDO - BOT360
+🚀 INICIO RÁPIDO - BOT
 
 Este script te ayuda a comenzar rápidamente.
 Ejecutar: python quick_start.py
@@ -22,7 +22,7 @@ def main():
     """Menú de inicio rápido"""
     project_root = Path(__file__).parent
     
-    print_header("🤖 BOT360 - Inicio Rápido v1.0.0")
+    print_header("🤖 BOT - Inicio Rápido v1.0.0")
     
     print("""
 OPCIÓN 1: Ejecutar aplicación desktop
@@ -40,8 +40,8 @@ OPCIÓN 3: Compilar ejecutable .EXE
 OPCIÓN 4: Preparar para GitHub
    $ git init
    $ git add .
-   $ git commit -m "Initial: BOT360 v1.0.0"
-   $ git remote add origin https://github.com/usuario/bot360
+   $ git commit -m "Initial: BOT v1.0.0"
+   $ git remote add origin https://github.com/usuario/bot
    $ git push -u origin main
    $ git tag -a v1.0.0 -m "Release v1.0.0"
    $ git push origin v1.0.0
@@ -74,7 +74,7 @@ PASOS RECOMENDADOS:
 4. Subir a GitHub:
    git init
    git add .
-   git commit -m "BOT360 v1.0.0"
+   git commit -m "BOT v1.0.0"
    ...
 
 ARCHIVOS IMPORTANTES:
@@ -92,19 +92,19 @@ ARCHIVOS IMPORTANTES:
 
 🔨 Build:
    build.py              ← Compilar ejecutable
-   bot360.spec           ← Configuración PyInstaller
+   bot.spec           ← Configuración PyInstaller
    setup.py              ← Instalación Python
 
 📦 Código:
    src/agenda_app/       ← Gestión de agendas
-   src/bot360_app/       ← Automatización
+   src/bot_app/       ← Automatización
    src/ui/               ← Interfaz desktop NUEVA
    tests/                ← Pruebas
 
 """)
     
     print("="*60)
-    print("✅ BOT360 listo para usar")
+    print("✅ BOT listo para usar")
     print("="*60 + "\n")
 
 if __name__ == "__main__":

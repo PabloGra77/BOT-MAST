@@ -14,9 +14,9 @@ def _resolve_base_dir() -> Path:
     - Empaquetado con PyInstaller (`sys.frozen`) -> carpeta donde está el .exe,
       NO la carpeta temporal `_MEIxxxx`. Esto permite que `config.json`,
       `logs/` y `downloads/` persistan entre ejecuciones, junto al ejecutable.
-    - Override por variable de entorno `BOT360_BASE_DIR`.
+    - Override por variable de entorno `BOT_BASE_DIR`.
     """
-    override = os.environ.get("BOT360_BASE_DIR")
+    override = os.environ.get("BOT_BASE_DIR")
     if override:
         return Path(override).resolve()
     if getattr(sys, "frozen", False):
@@ -32,7 +32,6 @@ DOWNLOADS_DIR = BASE_DIR / "downloads"
 HC_OUTPUT_DIR = DOWNLOADS_DIR / "hc"
 CHROME_DOWNLOAD_DIR = DOWNLOADS_DIR / "browser"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-ALERTS_LOG_PATH = LOGS_DIR / "admin_alerts.log"
 JOB_CONFIG_DIR = BASE_DIR / "downloads" / "runtime" / "job_configs"
 
 
@@ -40,7 +39,37 @@ def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _bootstrap_config_from_bundle() -> None:
+    """Si estamos empaquetados (PyInstaller) y NO existe `config/config.json`
+    junto al .exe, copiar el config embebido (en `sys._MEIPASS/config/`) hacia
+    `BASE_DIR/config/`. Esto permite distribuir el .exe SIN carpeta config:
+    en el primer arranque se auto-extrae con las credenciales precargadas.
+    """
+    try:
+        if CONFIG_PATH.exists():
+            return
+        meipass = getattr(sys, "_MEIPASS", None)
+        if not meipass:
+            return
+        embebido = Path(meipass) / "config" / "config.json"
+        if not embebido.exists():
+            return
+        _ensure_parent(CONFIG_PATH)
+        import shutil as _sh
+        _sh.copyfile(str(embebido), str(CONFIG_PATH))
+    except Exception:
+        # No abortar el arranque si la extraccion falla; el codigo aguas abajo
+        # mostrara el error apropiado si realmente no encuentra el config.
+        pass
+
+
+_bootstrap_config_from_bundle()
+
+
 def load_main_config() -> dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        # Reintentar bootstrap por si el archivo fue removido en runtime.
+        _bootstrap_config_from_bundle()
     if not CONFIG_PATH.exists():
         return {}
     with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
@@ -51,29 +80,3 @@ def save_main_config(config: dict[str, Any]) -> None:
     _ensure_parent(CONFIG_PATH)
     with CONFIG_PATH.open("w", encoding="utf-8") as config_file:
         json.dump(config, config_file, indent=4, ensure_ascii=False)
-
-
-def _nested_get(config: dict[str, Any], *keys: str, default: Any = None) -> Any:
-    current: Any = config
-    for key in keys:
-        if not isinstance(current, dict):
-            return default
-        current = current.get(key)
-        if current is None:
-            return default
-    return current
-
-
-def get_api_key(config: dict[str, Any] | None = None) -> str:
-    cfg = config if config is not None else load_main_config()
-    return os.environ.get("AGENDA_API_KEY") or _nested_get(cfg, "security", "api_key", default="")
-
-
-def get_secret_key(config: dict[str, Any] | None = None) -> str:
-    cfg = config if config is not None else load_main_config()
-    return os.environ.get("AGENDA_SECRET_KEY") or _nested_get(cfg, "security", "secret_key", default="")
-
-
-def get_reset_token(config: dict[str, Any] | None = None) -> str:
-    cfg = config if config is not None else load_main_config()
-    return os.environ.get("AGENDA_RESET_TOKEN") or _nested_get(cfg, "security", "reset_token", default="")

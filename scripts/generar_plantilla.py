@@ -1,7 +1,7 @@
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
-OUT = r"c:\Users\LUIs CORDOBA\Downloads\PLANTILLA_BOT360_v10.0.22.xlsx"
+OUT = r"c:\Users\LUIs CORDOBA\Downloads\PLANTILLA_BOT_v10.0.22.xlsx"
 
 wb = openpyxl.Workbook()
 ws = wb.active
@@ -37,7 +37,7 @@ ws2 = wb.create_sheet("INSTRUCCIONES")
 inst = [
     ["Columna", "Obligatoria", "Descripcion"],
     ["CC", "SI", "Cedula del paciente."],
-    ["SERVICIO", "Recomendado", "Nombre EXACTO del servicio en INPEC360 (ej: MEDICINA GENERAL, PSIQUIATRIA)."],
+    ["SERVICIO", "Recomendado", "Nombre EXACTO del servicio en INPEC (ej: MEDICINA GENERAL, PSIQUIATRIA)."],
     ["ESTRATEGIA", "No", "RECIENTE (default) | ANTIGUA | RANGO FECHAS | EVOLUCION | VALORACION | PRIMERA VEZ."],
     ["FECHA INICIO", "No*", "DD/MM/YYYY. Si vacia se usa la fecha global del UI."],
     ["FECHA FIN", "No*", "DD/MM/YYYY. Si vacia se usa la fecha global del UI."],

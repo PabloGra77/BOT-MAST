@@ -1,12 +1,12 @@
 """
-UI Module for BOT360
+UI Module for BOT
 
-Módulo de interfaz de usuario desktop con PyQt6
+Modulo de interfaz de usuario desktop con PyQt6.
 """
 
 __version__ = "1.0.0"
-__author__ = "BOT360 Team"
+__author__ = "BOT Team"
 
-from .desktop_app import DesktopApp, main
+from .desktop_app import MainWindow, main
 
-__all__ = ["DesktopApp", "main"]
+__all__ = ["MainWindow", "main"]

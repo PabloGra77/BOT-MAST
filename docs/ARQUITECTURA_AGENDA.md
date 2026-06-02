@@ -59,7 +59,7 @@ La aplicación se compone de una API segura, una interfaz web y un bot automatiz
    - `AGENDA_SECRET_KEY`
    - `AGENDA_API_KEY`
    - `AGENDA_LOG_PATH` (opcional)
-3. Ejecutar la aplicación WSGI usando `bot360_app/web/wsgi.py` con un servidor como Gunicorn o Waitress.
+3. Ejecutar la aplicación WSGI usando `bot_app/web/wsgi.py` con un servidor como Gunicorn o Waitress.
 
 ## Estructura operativa
 

@@ -30,8 +30,10 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
+!bot360.spec          # el spec de build SI se versiona
 *.exe
-*.ico
+release/             # carpeta de salida del .exe empaquetado
+BOT360_v*/           # carpetas de release antiguas
 
 # Virtual environments
 venv/
@@ -70,6 +72,13 @@ downloads/runtime/*
 # Config (sensitive data)
 config/config.json
 config/credentials.json
+
+# Datos de usuario sensibles (PII): no subir a GitHub.
+# Las PLANTILLAS de ejemplo SI se versionan (ver excepciones abajo).
+usuario/USUARIOS*.xlsx
+usuario/*.csv
+!usuario/PLANTILLA_*.xlsx
+!usuario/PLANTILLA_*.csv
 
 # OS
 Thumbs.db

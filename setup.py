@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Setup script for BOT360
+Setup script for BOT
 
 Install: pip install -e .
 Build: python setup.py build
@@ -19,20 +19,19 @@ except FileNotFoundError:
     long_description = 'Bot de Automatización INPEC'
 
 setup(
-    name='bot360',
+    name='bot',
     version='1.0.0',
     description='Bot de Automatización INPEC - Gestión de Agendas y Historias Clínicas',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    author='Bot360 Team',
-    author_email='team@bot360.local',
-    url='https://github.com/tu-usuario/bot360',
+    author='Bot Team',
+    author_email='team@bot.local',
+    url='https://github.com/PabloGra77/BOT-MAST',
     license='MIT',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
     include_package_data=True,
     install_requires=[
-        'flask==3.0.0',
         'selenium==4.15.2',
         'webdriver-manager==4.0.1',
         'pandas==2.1.4',
@@ -42,6 +41,7 @@ setup(
         'urllib3==2.1.0',
         'python-dotenv==1.0.0',
         'PyQt6==6.6.1',
+        'psutil==5.9.8',
     ],
     extras_require={
         'dev': [
@@ -58,8 +58,8 @@ setup(
     },
     python_requires='>=3.9',
     classifiers=[
-        'Development Status :: 4 - Beta',
-        'Environment :: Console',
+        'Development Status :: 5 - Production/Stable',
+        'Environment :: X11 Applications :: Qt',
         'Intended Audience :: System Administrators',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3',
@@ -69,9 +69,8 @@ setup(
         'Operating System :: Windows',
     ],
     entry_points={
-        'console_scripts': [
-            'bot360-cli=bot360_app.web.server:main',
-            'bot360-gui=ui.desktop_app:main',
+        'gui_scripts': [
+            'bot-gui=ui.desktop_app:main',
         ],
     },
 )

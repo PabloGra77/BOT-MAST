@@ -12,13 +12,15 @@ import pandas as pd
 from ..config import Config
 from ..domain.requests import AgendaRequest, HCRequest
 from .excel_lookup import buscar_profesional_por_cc
-from bot360_app.automation.loader import Bot
-from bot360_app.common.job_config import build_agenda_runtime_config, cleanup_runtime_config
-from bot360_app.common.settings import HC_OUTPUT_DIR
+from bot_app.automation.loader import Bot
+from bot_app.common.job_config import build_agenda_runtime_config, cleanup_runtime_config
+from bot_app.common.settings import HC_OUTPUT_DIR
 
 
 logger = logging.getLogger(__name__)
-REINICIO_PREVENTIVO_CADA = 50
+# Cada cuantos registros buscados se REFRESCA el navegador (cierre + reapertura
+# limpia con nuevo login). Mantiene la sesion estable sin cerrarlo definitivamente.
+REINICIO_PREVENTIVO_CADA = 20
 MAX_RECOVERY_ATTEMPTS = 3
 
 
@@ -47,18 +49,26 @@ def _normalizar_fecha_ddmmyyyy(valor):
         return s
 
 
-def _crear_bot_con_sesion(config_path, download_dir=None, browser_name="chrome", credential_override=None):
+def _crear_bot_con_sesion(config_path, download_dir=None, browser_name="chrome", credential_override=None, output_dir=None):
     bot = Bot(
         config_path=config_path,
         browser_name=browser_name,
         credential_override=credential_override,
     )
     bot.iniciar_navegador(download_dir=download_dir)
+    # output_dir = carpeta donde se crean las subcarpetas finales por servicio
+    # (compartida entre navegadores). Si no se pasa, equivale a download_dir.
+    if output_dir:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception:
+            pass
+        bot.output_dir = output_dir
     bot.login()
     return bot
 
 
-def _reiniciar_bot(bot, config_path, motivo, download_dir=None, browser_name="chrome", credential_override=None):
+def _reiniciar_bot(bot, config_path, motivo, download_dir=None, browser_name="chrome", credential_override=None, output_dir=None):
     logger.warning("Recuperando bot por falla transitoria: %s", motivo)
     if bot is not None:
         try:
@@ -70,10 +80,11 @@ def _reiniciar_bot(bot, config_path, motivo, download_dir=None, browser_name="ch
         download_dir=download_dir,
         browser_name=browser_name,
         credential_override=credential_override,
+        output_dir=output_dir,
     )
 
 
-def _recuperar_o_reiniciar_bot(bot, config_path, motivo, download_dir=None, browser_name="chrome", credential_override=None):
+def _recuperar_o_reiniciar_bot(bot, config_path, motivo, download_dir=None, browser_name="chrome", credential_override=None, output_dir=None):
     # Primero intentamos una recuperación suave para no cerrar/reabrir navegador en cada incidencia.
     if bot is not None:
         try:
@@ -89,6 +100,7 @@ def _recuperar_o_reiniciar_bot(bot, config_path, motivo, download_dir=None, brow
         download_dir=download_dir,
         browser_name=browser_name,
         credential_override=credential_override,
+        output_dir=output_dir,
     )
 
 
@@ -542,6 +554,15 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
         browser_en_uso = browser_preferido
         cred_idx = idx_hilo % max(1, len(credenciales_pool))
 
+        # Cada navegador descarga en su propia subcarpeta aislada para evitar
+        # que el barrido/dedup de un hilo capture PDFs en vuelo de otro hilo.
+        # Las subcarpetas finales por servicio se crean en `carpeta_lote` (compartido).
+        download_dir_hilo = os.path.join(carpeta_lote, f"_w{idx_hilo}")
+        try:
+            os.makedirs(download_dir_hilo, exist_ok=True)
+        except Exception:
+            pass
+
         def cred_actual():
             return credenciales_pool[cred_idx] if credenciales_pool else None
 
@@ -555,7 +576,8 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
             try:
                 bot = _crear_bot_con_sesion(
                     config_path=Config.CONFIG_JSON_PATH,
-                    download_dir=carpeta_lote,
+                    download_dir=download_dir_hilo,
+                    output_dir=carpeta_lote,
                     browser_name=browser_en_uso,
                     credential_override=cred_actual(),
                 )
@@ -569,12 +591,19 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                     )
                     bot = _crear_bot_con_sesion(
                         config_path=Config.CONFIG_JSON_PATH,
-                        download_dir=carpeta_lote,
+                        download_dir=download_dir_hilo,
+                        output_dir=carpeta_lote,
                         browser_name=browser_en_uso,
                         credential_override=cred_actual(),
                     )
                 else:
                     raise
+
+            # Propagar stop_event al bot para que aborte sub-loops largos.
+            try:
+                bot.stop_event = stop_event
+            except Exception:
+                pass
 
             for i_local, p in enumerate(pacientes_lote):
                 if _detener_solicitado(stop_event):
@@ -583,15 +612,47 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
 
                 i_global = int(p.get("_idx", i_local))
                 cedula = p["cedula"]
+                # REFRESCO PREVENTIVO: cada N registros se CIERRA y se vuelve a
+                # ABRIR el navegador (login limpio). No queda cerrado: se reabre
+                # estable para evitar lentitud/caducidad de sesion acumulada.
                 if i_local > 0 and i_local % REINICIO_PREVENTIVO_CADA == 0:
                     logger.info(
-                        "[MANTENIMIENTO] Reinicio preventivo hilo=%s tras %s CC.",
+                        "[REFRESCO] Cerrando y reabriendo navegador hilo=%s tras %s registros.",
                         browser_en_uso,
                         i_local,
                     )
-                    bot.mantenimiento_preventivo_hc(
-                        motivo=f"cada {REINICIO_PREVENTIVO_CADA} CC procesadas ({browser_en_uso})"
-                    )
+                    try:
+                        bot = _reiniciar_bot(
+                            bot,
+                            config_path=Config.CONFIG_JSON_PATH,
+                            motivo=f"refresco cada {REINICIO_PREVENTIVO_CADA} registros ({browser_en_uso})",
+                            download_dir=download_dir_hilo,
+                            browser_name=browser_en_uso,
+                            credential_override=cred_actual(),
+                            output_dir=carpeta_lote,
+                        )
+                    except Exception as exc_ref:
+                        # No abortar el lote por un fallo de refresco: intentar una
+                        # recuperacion; si tampoco se logra, la recuperacion por
+                        # registro (mas abajo) se encargara. Nunca propagar aqui.
+                        logger.warning("[REFRESCO] Fallo al reabrir navegador: %s. Se intenta recuperar.", exc_ref)
+                        try:
+                            bot = _recuperar_o_reiniciar_bot(
+                                bot,
+                                config_path=Config.CONFIG_JSON_PATH,
+                                motivo=f"recuperacion tras fallo de refresco ({browser_en_uso})",
+                                download_dir=download_dir_hilo,
+                                browser_name=browser_en_uso,
+                                credential_override=cred_actual(),
+                                output_dir=carpeta_lote,
+                            )
+                        except Exception as exc_ref2:
+                            logger.error("[REFRESCO] No se pudo reabrir/recuperar el navegador: %s", exc_ref2)
+                    try:
+                        if bot is not None:
+                            bot.stop_event = stop_event
+                    except Exception:
+                        pass
 
                 servicio = p.get("servicio") or req.servicio
                 estrategia = p.get("estrategia") or req.estrategia
@@ -643,7 +704,8 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                             bot = _recuperar_o_reiniciar_bot(
                                 bot,
                                 config_path=Config.CONFIG_JSON_PATH,
-                                download_dir=carpeta_lote,
+                                download_dir=download_dir_hilo,
+                                output_dir=carpeta_lote,
                                 motivo=f"pre-chequeo HC CC={cedula} intento {intento_pre}: {exc}",
                                 browser_name=browser_en_uso,
                                 credential_override=cred_actual(),
@@ -695,7 +757,8 @@ def run_hc_job(req: HCRequest, stop_event=None, progress_callback=None):
                                 bot = _recuperar_o_reiniciar_bot(
                                     bot,
                                     config_path=Config.CONFIG_JSON_PATH,
-                                    download_dir=carpeta_lote,
+                                    download_dir=download_dir_hilo,
+                                    output_dir=carpeta_lote,
                                     motivo=f"HC CC={cedula} intento {intento_hc}: {exc}",
                                     browser_name=browser_en_uso,
                                     credential_override=cred_actual(),

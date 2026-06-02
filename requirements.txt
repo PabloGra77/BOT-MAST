@@ -1,9 +1,5 @@
-# BOT360 - Dependencias Python
+# BOT - Dependencias Python (aplicacion de escritorio)
 # Instalar: pip install -r requirements.txt
-
-# Web Framework
-flask==3.0.0
-flask-cors==4.0.0
 
 # Automation & Web Driver
 selenium==4.15.2
@@ -20,14 +16,12 @@ urllib3==2.1.0
 
 # GUI Desktop
 PyQt6==6.6.1
-PyQt6-Charts==6.6.1
-PyQt6-WebEngine==6.6.1
+
+# Monitoreo de recursos del sistema
+psutil==5.9.8
 
 # Environment & Configuration
 python-dotenv==1.0.0
-
-# Logging & Monitoring
-colorama==0.4.6
 
 # Development (Opcional)
 # pytest==7.4.3

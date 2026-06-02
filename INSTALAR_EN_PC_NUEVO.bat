@@ -98,7 +98,6 @@ echo Por favor espere, esto puede tardar unos minutos...
 
 echo    - Creando lista de requisitos compatible...
 (
-    echo flask
     echo selenium
     echo webdriver-manager
     echo pandas
@@ -106,6 +105,9 @@ echo    - Creando lista de requisitos compatible...
     echo requests
     echo pymupdf
     echo urllib3
+    echo PyQt6
+    echo psutil
+    echo python-dotenv
 ) > requirements_compatible.txt
 
 echo    - Actualizando herramientas de instalacion...
@@ -169,11 +171,11 @@ echo ===========================================================================
 echo                 INSTALACION EXITOSA
 echo ===========================================================================
 echo.
-echo Iniciando el Bot...
-echo NO CIERRE ESTA VENTANA MIENTRAS USE EL BOT.
+echo Iniciando la aplicacion de escritorio BOT...
+echo Puede cerrar esta ventana cuando termine de usar el Bot.
 echo.
 
-.venv\Scripts\python.exe -m bot360_app.web.server
+.venv\Scripts\python.exe "%~dp0src\ui\desktop_app.py"
 
 if !errorlevel! neq 0 (
     echo.
