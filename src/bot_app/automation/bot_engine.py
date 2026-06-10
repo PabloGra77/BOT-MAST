@@ -137,7 +137,8 @@ class Bot:
         # NO hay nada por descargar).
         self.HC_RESULTADOS_TIMEOUT = 8
         # Espera normal de la descarga del PDF tras el click en la impresora.
-        self.HC_DESCARGA_TIMEOUT = 20
+        # Aumentado a 30s para conexiones lentas donde el PDF tarda en generarse.
+        self.HC_DESCARGA_TIMEOUT = 30
         # Tope cuando hay una descarga LENTA en curso (.crdownload): 360 a veces
         # se queda "cargando"; mientras el navegador siga bajando el archivo se
         # espera hasta este tope antes de darlo por fallido.
@@ -2205,7 +2206,15 @@ class Bot:
                         key=lambda nombre: os.path.getmtime(os.path.join(self.download_dir, nombre)),
                         reverse=True,
                     )
-                    return candidatos[0]
+                    # FIX: Verificar que el archivo no esté vacío (tamaño > 0)
+                    # antes de darlo por completado. Evita retornar un PDF en blanco
+                    # cuando el sistema aún no ha terminado de escribirlo.
+                    for _cand in candidatos:
+                        try:
+                            if os.path.getsize(os.path.join(self.download_dir, _cand)) > 0:
+                                return _cand
+                        except Exception:
+                            pass
                 # ¿Hay un archivo temporal de descarga en curso?
                 descargando = any(f.lower().endswith(en_progreso) for f in archivos_ahora)
             except Exception:
@@ -2229,6 +2238,22 @@ class Bot:
                 if nuevas:
                     self.driver.switch_to.window(nuevas[-1])
                     self.log("[INFO] Se detecto una nueva pestaña/ventana del visor PDF.")
+                    # --- FIX: Esperar que la página/PDF cargue completamente ---
+                    # Si el bot actúa demasiado rápido antes de que el PDF renderice,
+                    # se descarga un archivo en blanco o incompleto.
+                    _t_carga = time.time()
+                    while time.time() - _t_carga < 15:
+                        try:
+                            rs = self.driver.execute_script("return document.readyState")
+                            if rs == "complete":
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                    # Pausa adicional para que el visor PDF termine de renderizar
+                    # el contenido antes de intentar la descarga.
+                    time.sleep(2)
+                    self.log("[INFO] Pestaña PDF lista (readyState=complete).")
                     return True
             except Exception:
                 pass
@@ -2262,7 +2287,20 @@ class Bot:
 
     def _descargar_pdf_desde_contexto_actual(self, cedula, ventanas_antes, archivos_antes, numero_factura, tipo_detectado_tabla, servicio, fecha_inicio=None, fecha_fin=None, numero_ingreso=None, permitir_duplicado_unico=False):
         try:
-            current_url = self.driver.current_url
+            # --- FIX: Esperar a que la URL sea un PDF válido (hasta 10s) ---
+            # Si el bot llega aquí demasiado rápido, current_url puede ser
+            # una página de carga intermedia, no el PDF real.
+            current_url = ""
+            _t_url = time.time()
+            while time.time() - _t_url < 10:
+                try:
+                    current_url = self.driver.current_url or ""
+                    if "avisualizar_pdf" in current_url or current_url.lower().endswith(".pdf"):
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
             if not current_url:
                 return None
             if "avisualizar_pdf" not in current_url and not current_url.lower().endswith(".pdf"):
@@ -2271,46 +2309,77 @@ class Bot:
             self.log(f"[INFO] URL de PDF detectada: {current_url}")
             self.log("[INFO] Intentando descarga directa via HTTP (Requests)...")
 
-            session = requests.Session()
-            selenium_cookies = self.driver.get_cookies()
-            for cookie in selenium_cookies:
-                session.cookies.set(cookie['name'], cookie['value'])
+            # --- FIX: Reintentos por PDF en blanco ---
+            # Si el servidor devuelve un PDF vacío (porque aún lo está generando),
+            # reintentamos hasta 3 veces con espera creciente.
+            MAX_REINTENTOS_PDF = 3
+            for _intento_pdf in range(1, MAX_REINTENTOS_PDF + 1):
+                try:
+                    session = requests.Session()
+                    selenium_cookies = self.driver.get_cookies()
+                    for cookie in selenium_cookies:
+                        session.cookies.set(cookie['name'], cookie['value'])
 
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
-                "Referer": current_url,
-            }
-            response = session.get(current_url, headers=headers, stream=True, verify=False, timeout=30)
-            content_type = response.headers.get('Content-Type', '').lower()
-            if response.status_code != 200 or ('pdf' not in content_type and 'application/octet-stream' not in content_type):
-                self.log(f"[WARN] Descarga directa no válida. status={response.status_code} content-type={content_type}")
-                return None
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
+                        "Referer": current_url,
+                    }
+                    response = session.get(current_url, headers=headers, stream=True, verify=False, timeout=30)
+                    content_type = response.headers.get('Content-Type', '').lower()
+                    if response.status_code != 200 or ('pdf' not in content_type and 'application/octet-stream' not in content_type):
+                        self.log(f"[WARN] Descarga directa no válida (intento {_intento_pdf}). status={response.status_code} content-type={content_type}")
+                        if _intento_pdf < MAX_REINTENTOS_PDF:
+                            time.sleep(3 * _intento_pdf)
+                            continue
+                        return None
 
-            temp_file = os.path.join(self.download_dir, f"temp_{cedula}_{int(time.time())}.pdf")
-            with open(temp_file, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+                    temp_file = os.path.join(self.download_dir, f"temp_{cedula}_{int(time.time())}.pdf")
+                    with open(temp_file, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
 
-            tipo_final = self.detectar_tipo_atencion(temp_file) if tipo_detectado_tabla in ("DESCONOCIDO", "OTRO") else tipo_detectado_tabla
-            self._mover_a_subcarpeta(
-                temp_file, cedula, tipo_final, servicio,
-                numero_factura=numero_factura,
-                fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
-                numero_ingreso=numero_ingreso,
-                permitir_duplicado_unico=permitir_duplicado_unico,
-            )
-            self._cerrar_ventanas_auxiliares(ventanas_antes)
-            # Limpiar PDFs auto-descargados por el navegador (patron RptHistoria*.pdf).
-            # SAFE en cualquier modo: solo borra archivos genericos del navegador,
-            # nunca PDFs ya renombrados con prefijo de cedula.
-            try:
-                self._eliminar_pdfs_duplicados_recientes(archivos_antes, ventana_segundos=15)
-            except Exception:
-                pass
+                    # --- FIX: Validar que el PDF descargado no esté en blanco ---
+                    ok_pdf, motivo_pdf = self._validar_pdf_no_vacio(temp_file)
+                    if not ok_pdf:
+                        self.log(f"[WARN] PDF en blanco/inválido (intento {_intento_pdf}): {motivo_pdf}. "
+                                 f"{'Reintentando en 3s...' if _intento_pdf < MAX_REINTENTOS_PDF else 'Sin más reintentos.'}")
+                        try:
+                            os.remove(temp_file)
+                        except Exception:
+                            pass
+                        if _intento_pdf < MAX_REINTENTOS_PDF:
+                            time.sleep(3 * _intento_pdf)
+                            continue
+                        return None
 
-            self.log(f"[EXITO] PDF descargado y pestaña cerrada para CC={cedula}.")
-            return tipo_final
+                    self.log(f"[OK] PDF válido en intento {_intento_pdf} ({os.path.getsize(temp_file)} bytes).")
+                    tipo_final = self.detectar_tipo_atencion(temp_file) if tipo_detectado_tabla in ("DESCONOCIDO", "OTRO") else tipo_detectado_tabla
+                    self._mover_a_subcarpeta(
+                        temp_file, cedula, tipo_final, servicio,
+                        numero_factura=numero_factura,
+                        fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+                        numero_ingreso=numero_ingreso,
+                        permitir_duplicado_unico=permitir_duplicado_unico,
+                    )
+                    self._cerrar_ventanas_auxiliares(ventanas_antes)
+                    # Limpiar PDFs auto-descargados por el navegador (patron RptHistoria*.pdf).
+                    # SAFE en cualquier modo: solo borra archivos genericos del navegador,
+                    # nunca PDFs ya renombrados con prefijo de cedula.
+                    try:
+                        self._eliminar_pdfs_duplicados_recientes(archivos_antes, ventana_segundos=15)
+                    except Exception:
+                        pass
+
+                    self.log(f"[EXITO] PDF descargado y pestaña cerrada para CC={cedula}.")
+                    return tipo_final
+
+                except Exception as _e_intento:
+                    self.log(f"[WARN] Error en intento {_intento_pdf} de descarga directa: {_e_intento}")
+                    if _intento_pdf < MAX_REINTENTOS_PDF:
+                        time.sleep(3 * _intento_pdf)
+
+            return None
         except Exception as e:
             self.log(f"[WARN] Falló descarga directa del PDF abierto: {e}")
             return None
@@ -2554,16 +2623,17 @@ class Bot:
                         try:
                             _txt = self._texto_fila_por_boton(_btn)
                             _txtu = (_txt or "").upper()
-                            if any(s in _txtu for s in ("NO ASISTIDA", "CANCELADA", "POR ATENDER")):
-                                self.log(f"[RANGO] Fila {_i_btn+1}: descartada por estado.")
+                            # FILTRO ESTRICTO: solo descargar filas con estado ATENDIDA
+                            if "ATENDIDA" not in _txtu:
+                                self.log(f"[RANGO] Fila {_i_btn+1}: descartada (estado no es ATENDIDA: {_txtu[:80]}).")
                                 continue
                             _ing = self._extraer_numero_ingreso_de_fila(_txt)
                             filas_validas.append((_i_btn, _ing or ""))
-                            self.log(f"[RANGO] Fila {_i_btn+1}: incluida (ingreso={_ing or 'N/D'}).")
+                            self.log(f"[RANGO] Fila {_i_btn+1}: incluida (ATENDIDA, ingreso={_ing or 'N/D'}).")
                         except Exception as _e:
-                            # Ante cualquier error, NO descartar la fila: incluirla por indice.
-                            filas_validas.append((_i_btn, ""))
-                            self.log(f"[RANGO] Fila {_i_btn+1}: incluida pese a error extrayendo ingreso: {_e}")
+                            # Ante cualquier error al leer el texto, descartar por seguridad
+                            # para no descargar filas con estado desconocido.
+                            self.log(f"[RANGO] Fila {_i_btn+1}: descartada por error leyendo estado: {_e}")
                     self.log(f"[INFO] RANGO FECHAS: {len(filas_validas)} filas validas para descargar.")
                     if not filas_validas:
                         return False, "RANGO FECHAS: sin registros validos en el rango"
@@ -2666,8 +2736,8 @@ class Bot:
                         self.log(f"[INFO] Fila {idx+1} descartada por tipo solicitado: detectado={tipo_fila}, requerido={tipo_objetivo_norm}")
                         continue
 
-                    if "NO ASISTIDA" in texto_fila_up or "CANCELADA" in texto_fila_up or "POR ATENDER" in texto_fila_up:
-                        self.log(f"[INFO] Fila {idx+1} descartada por estado no valido.")
+                    if "ATENDIDA" not in texto_fila_up:
+                        self.log(f"[INFO] Fila {idx+1} descartada: estado no es ATENDIDA.")
                         continue
 
                     target_btn = btn_actual
