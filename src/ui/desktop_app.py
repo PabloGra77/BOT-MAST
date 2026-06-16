@@ -74,7 +74,7 @@ except ImportError:
     load_main_config = _load_config
     save_main_config = _save_config
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 # Repositorio para buscar/descargar nuevas versiones (auto-actualizacion).
 GITHUB_REPO = "PabloGra77/BOT-MAST"
 # Maximo de navegadores/usuarios en paralelo. Cada navegador requiere un

@@ -1,4 +1,4 @@
-﻿import json
+import json
 import time
 import sys
 import datetime
@@ -107,15 +107,13 @@ class Bot:
         if not self._driver_operativo():
             raise Exception(f"El navegador se cayó o no responde. Motivo: {motivo or 'driver no operativo'}")
         try:
-            # Prueba básica de acceso a la página
             _ = self.driver.current_url
-            # Prueba de acceso a un campo típico (login o body)
-            try:
-                _ = self.driver.find_element(By.TAG_NAME, "body")
-            except Exception:
-                raise Exception(f"El navegador está abierto pero la página no responde o no reconoce los campos. Motivo: {motivo}")
         except Exception:
             raise Exception(f"El navegador se cayó o no responde. Motivo: {motivo}")
+        try:
+            _ = self.driver.find_element(By.TAG_NAME, "body")
+        except Exception:
+            raise Exception(f"El navegador está abierto pero la página no responde o no reconoce los campos. Motivo: {motivo}")
     def __init__(self, config_path=str(CONFIG_PATH), log_callback=None, browser_name="chrome", credential_override=None):
         self.log_callback = log_callback
         self.cargar_configuracion(config_path)
@@ -282,7 +280,8 @@ class Bot:
             # Sin match exacto: log con TODAS las opciones para diagnostico y FALLA.
             self.log(f"[ERROR] Servicio NO encontrado en el dropdown: '{texto_servicio}' (normalizado: '{target_norm}')")
             self.log(f"        Opciones disponibles ({len(opciones)}): {[o.text for o in opciones]}")
-            
+            return False
+
         except Exception as e:
             self.log(f"[ERROR] Error seleccionando servicio: {e}")
             return False
@@ -355,6 +354,7 @@ class Bot:
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-infobars")
+            options.add_argument("--disable-popup-blocking")
             options.page_load_strategy = 'eager'
 
             # Perfil AISLADO por navegador: cada instancia usa su propia carpeta
@@ -2211,7 +2211,7 @@ class Bot:
                     # cuando el sistema aún no ha terminado de escribirlo.
                     for _cand in candidatos:
                         try:
-                            if os.path.getsize(os.path.join(self.download_dir, _cand)) > 0:
+                            if os.path.getsize(os.path.join(self.download_dir, _cand)) >= self.PDF_MIN_BYTES:
                                 return _cand
                         except Exception:
                             pass
@@ -2252,7 +2252,7 @@ class Bot:
                         time.sleep(0.5)
                     # Pausa adicional para que el visor PDF termine de renderizar
                     # el contenido antes de intentar la descarga.
-                    time.sleep(2)
+                    time.sleep(5)
                     self.log("[INFO] Pestaña PDF lista (readyState=complete).")
                     return True
             except Exception:
@@ -2324,7 +2324,7 @@ class Bot:
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
                         "Referer": current_url,
                     }
-                    response = session.get(current_url, headers=headers, stream=True, verify=False, timeout=30)
+                    response = session.get(current_url, headers=headers, stream=True, verify=True, timeout=30)
                     content_type = response.headers.get('Content-Type', '').lower()
                     if response.status_code != 200 or ('pdf' not in content_type and 'application/octet-stream' not in content_type):
                         self.log(f"[WARN] Descarga directa no válida (intento {_intento_pdf}). status={response.status_code} content-type={content_type}")
@@ -2385,6 +2385,10 @@ class Bot:
             return None
 
     def descargar_historia_clinica(self, cedula, fecha_inicio, fecha_fin, servicio=None, estrategia="RECIENTE", tipo_hc_objetivo=None, _reintento=0, numero_factura=None, numero_ingreso=None, _modo_rango_fechas=False, _indice_objetivo=None):
+        """
+        Descarga la historia clínica de un paciente dado.
+        estrategia: "RECIENTE" (default, primera de la lista) o "ANTIGUA" (última de la lista).
+        """
         # Crear solo la carpeta de servicio antes de intentar la descarga.
         try:
             base_dir = self.download_dir if hasattr(self, 'download_dir') else 'downloads'
@@ -2393,10 +2397,6 @@ class Bot:
             self.log(f"[INFO] Carpeta pre-creada para servicio: {carpeta_servicio}")
         except Exception as e:
             self.log(f"[WARN] No se pudo crear carpeta previa: {e}")
-        """
-        Descarga la historia clínica de un paciente dado.
-        estrategia: "RECIENTE" (default, primera de la lista) o "ANTIGUA" (última de la lista).
-        """
         self.log(f"--- INICIANDO DESCARGA DE HC: {cedula} ---")
         
         # Determinar carpeta de descarga actual (para monitoreo)
@@ -2652,7 +2652,7 @@ class Bot:
                                 servicio=servicio,
                                 estrategia="RECIENTE",
                                 tipo_hc_objetivo=None,
-                                _reintento=2,
+                                _reintento=0,
                                 numero_factura=numero_factura,
                                 numero_ingreso=(_ing or None),
                                 _modo_rango_fechas=True,
@@ -2805,12 +2805,12 @@ class Bot:
                         self.log(f"[WARN] Click normal falló ({str(e_click)}). Intentando JS...")
                         self.driver.execute_script("arguments[0].click();", target_btn)
 
-                ventana_nueva = self._detectar_ventana_nueva(ventanas_antes, timeout=8)
+                ventana_nueva = self._detectar_ventana_nueva(ventanas_antes, timeout=15)
                 if hasattr(self, 'download_dir'):
-                    # Espera principal de la descarga: consciente de descargas lentas
-                    # en curso (.crdownload). Evita el "skip" cuando 360 esta lento.
-                    archivo_descargado = self._esperar_archivo_descargado(archivos_antes, timeout=self.HC_DESCARGA_TIMEOUT)
-                    if not archivo_descargado and ventana_nueva and self._contexto_actual_es_pdf():
+                    # PRIORIDAD: Si ya hay una pestaña PDF abierta, descargar de inmediato
+                    # via HTTP sin esperar archivo en disco (evita bloqueo de 30s cuando
+                    # el visor del navegador muestra el PDF en vez de guardarlo).
+                    if ventana_nueva and self._contexto_actual_es_pdf():
                         tipo_descargado = self._descargar_pdf_desde_contexto_actual(
                             cedula=cedula,
                             ventanas_antes=ventanas_antes,
@@ -2825,6 +2825,9 @@ class Bot:
                         )
                         if tipo_descargado:
                             return True, tipo_descargado
+                    # Espera principal de la descarga: consciente de descargas lentas
+                    # en curso (.crdownload). Evita el "skip" cuando 360 esta lento.
+                    archivo_descargado = self._esperar_archivo_descargado(archivos_antes, timeout=self.HC_DESCARGA_TIMEOUT)
                 
                 # Manejo de Descarga y Renombrado
                 if hasattr(self, 'download_dir'):
