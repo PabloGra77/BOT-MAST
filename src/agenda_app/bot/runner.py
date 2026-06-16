@@ -328,8 +328,14 @@ def _obtener_numero_factura_paciente(paciente):
 def _obtener_numero_ingreso_paciente(paciente):
     if not isinstance(paciente, dict):
         return None
-    for clave in ("numero_ingreso", "numero de ingreso", "NUMERO DE INGRESO",
-                  "NUMERO INGRESO", "nro_ingreso", "ingreso"):
+    # Claves exactas prioritarias
+    claves_exactas = (
+        "numero_ingreso", "numero de ingreso", "NUMERO DE INGRESO",
+        "NUMERO INGRESO", "nro_ingreso", "ingreso", "NRO INGRESO",
+        "INGRESO NO", "ingreso no", "NO INGRESO", "no ingreso",
+        "nro. ingreso", "NRO. INGRESO", "num ingreso", "NUM INGRESO",
+    )
+    for clave in claves_exactas:
         if clave in paciente and str(paciente.get(clave) or "").strip():
             valor = str(paciente.get(clave)).strip()
             if valor.endswith(".0"):
@@ -337,6 +343,19 @@ def _obtener_numero_ingreso_paciente(paciente):
             if valor.lower() in ("nan", "none", ""):
                 return None
             return valor
+    # Busqueda case-insensitive + strip sobre las claves del dict (cubre espacios extra,
+    # mayusculas mixtas, etc. que el Excel puede generar al leer columnas).
+    for k, v in paciente.items():
+        k_norm = str(k).strip().lower().replace(".", "").replace("_", " ")
+        if k_norm in ("numero ingreso", "nro ingreso", "no ingreso",
+                      "num ingreso", "ingreso no", "ingreso"):
+            valor = str(v or "").strip()
+            if valor.endswith(".0"):
+                valor = valor[:-2]
+            if valor.lower() in ("nan", "none", ""):
+                continue
+            if valor:
+                return valor
     return None
 
 

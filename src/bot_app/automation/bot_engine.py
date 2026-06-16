@@ -2103,32 +2103,88 @@ class Bot:
         except Exception:
             return ""
 
-    def _extraer_numero_ingreso_de_fila(self, texto_fila):
-        """Extrae el numero de ingreso (columna 'Ingreso' de la tabla INPEC).
-        El ingreso suele ser un entero de 6-9 digitos. Se prioriza el numero mas
-        grande del rango aceptado dentro del texto de la fila para evitar confundirlo
-        con la cedula u otros codigos. Devuelve string sin signos o '' si no aplica.
+    def _extraer_numero_ingreso_de_fila(self, texto_fila, cedula=None):
+        """Extrae el numero de ingreso de la fila de la tabla INPEC.
+
+        Estrategia robusta:
+        1. Busca primero un patron contextual ("INGRESO", "NRO", etc.) cerca de
+           un numero de 5-9 digitos para identificarlo sin ambiguedad.
+        2. Si no hay patron contextual, filtra todos los numeros de 5-9 digitos
+           EXCLUYENDO la cedula del paciente (ya conocida) y las fechas en
+           formato DDMMYYYY/MMDDYYYY. De los restantes toma el primero.
+        3. Fallback: toma el primer numero de 5-8 digitos que no sea la cedula.
+
+        Devuelve string limpio (sin .0) o '' si no puede determinarse.
         """
         try:
             import re as _re
             if not texto_fila:
                 return ""
-            tokens = _re.findall(r"\b\d{5,10}\b", str(texto_fila))
+            texto = str(texto_fila)
+
+            # Normalizar cedula para exclusion
+            cc_norm = ""
+            if cedula:
+                cc_norm = str(cedula).strip()
+                if cc_norm.endswith(".0"):
+                    cc_norm = cc_norm[:-2]
+
+            # Estrategia 1: patron contextual.
+            # Busca un numero que aparezca justo despues de palabras clave de ingreso.
+            patron_ctx = _re.search(
+                r"(?:INGRESO|NRO\.?\s*ING|N[UU]MERO\s+DE\s+INGRESO|ING\.?\s*N)[^0-9]{0,15}(\d{5,9})",
+                texto, _re.IGNORECASE
+            )
+            if patron_ctx:
+                elegido = patron_ctx.group(1)
+                self.log(f"[INGRESO] Encontrado por contexto: {elegido}")
+                return elegido
+
+            # Tokens: todos los numeros de 5-10 digitos en la fila
+            tokens = _re.findall(r"\b(\d{5,10})\b", texto)
             if not tokens:
-                self.log(f"[INGRESO] Sin tokens numericos en fila. Texto={str(texto_fila)[:160]!r}")
+                self.log(f"[INGRESO] Sin tokens numericos. Texto={texto[:160]!r}")
                 return ""
-            # Heuristica: el ingreso suele ser de 6-8 digitos. Tomamos el ultimo
-            # numero de 6-8 digitos (los de 9-10 digitos suelen ser cedulas).
-            candidatos = [t for t in tokens if 6 <= len(t) <= 8]
+
+            # Excluir la cedula del paciente
+            def _es_cedula(t):
+                if not cc_norm:
+                    return False
+                return t == cc_norm or t.lstrip("0") == cc_norm.lstrip("0")
+
+            # Excluir numeros que parecen fechas (8 digitos tipo DDMMYYYY o YYYYMMDD)
+            def _es_fecha(t):
+                if len(t) != 8:
+                    return False
+                try:
+                    from datetime import datetime as _dt
+                    _dt.strptime(t, "%d%m%Y")
+                    return True
+                except Exception:
+                    pass
+                try:
+                    from datetime import datetime as _dt
+                    _dt.strptime(t, "%Y%m%d")
+                    return True
+                except Exception:
+                    pass
+                return False
+
+            candidatos = [
+                t for t in tokens
+                if not _es_cedula(t) and not _es_fecha(t)
+            ]
+
             if not candidatos:
-                # Fallback: si solo hay numeros largos (cedulas), tomar el ultimo
-                # numero corto encontrado o el ultimo de cualquier tamano.
-                candidatos = [t for t in tokens if len(t) <= 8]
-            if not candidatos:
-                self.log(f"[INGRESO] Sin candidatos validos. Tokens={tokens} Texto={str(texto_fila)[:160]!r}")
+                self.log(f"[INGRESO] Sin candidatos tras excluir cedula/fechas. Tokens={tokens}")
                 return ""
-            elegido = candidatos[-1]
+
+            # Preferir numeros de 5-8 digitos (ingreso tipico INPEC)
+            cortos = [t for t in candidatos if 5 <= len(t) <= 8]
+            elegido = cortos[0] if cortos else candidatos[0]
+            self.log(f"[INGRESO] Elegido por heuristica: {elegido} (candidatos={candidatos[:5]})")
             return elegido
+
         except Exception as _e:
             self.log(f"[INGRESO] Error extrayendo: {_e}")
             return ""
@@ -2627,7 +2683,7 @@ class Bot:
                             if "ATENDIDA" not in _txtu:
                                 self.log(f"[RANGO] Fila {_i_btn+1}: descartada (estado no es ATENDIDA: {_txtu[:80]}).")
                                 continue
-                            _ing = self._extraer_numero_ingreso_de_fila(_txt)
+                            _ing = self._extraer_numero_ingreso_de_fila(_txt, cedula=cedula)
                             filas_validas.append((_i_btn, _ing or ""))
                             self.log(f"[RANGO] Fila {_i_btn+1}: incluida (ATENDIDA, ingreso={_ing or 'N/D'}).")
                         except Exception as _e:
@@ -2721,9 +2777,12 @@ class Bot:
 
                     # Filtro por NUMERO DE INGRESO (Excel) si se solicito uno especifico.
                     if numero_ingreso:
-                        _ing_fila = self._extraer_numero_ingreso_de_fila(texto_fila)
-                        if str(_ing_fila).strip() != str(numero_ingreso).strip():
-                            self.log(f"[INFO] Fila {idx+1} descartada: ingreso fila={_ing_fila} != solicitado={numero_ingreso}")
+                        _ing_fila = self._extraer_numero_ingreso_de_fila(texto_fila, cedula=cedula)
+                        # Comparacion normalizada: ignorar ceros a la izquierda y espacios
+                        _ing_fila_norm = str(_ing_fila).strip().lstrip("0")
+                        _ing_sol_norm = str(numero_ingreso).strip().lstrip("0")
+                        if not _ing_fila_norm or _ing_fila_norm != _ing_sol_norm:
+                            self.log(f"[INFO] Fila {idx+1} descartada: ingreso fila={_ing_fila!r} (norm={_ing_fila_norm!r}) != solicitado={numero_ingreso!r} (norm={_ing_sol_norm!r})")
                             continue
 
                     # Regla solicitada: para Psiquiatria filtrar por tipo de HC pedido en estrategia.
@@ -2748,10 +2807,10 @@ class Bot:
 
                 if target_btn is None:
                     if numero_ingreso:
-                        return False, f"Sin registro con numero de ingreso {numero_ingreso} en el rango de fechas"
+                        return False, f"Sin registro ATENDIDA con numero de ingreso {numero_ingreso} en las fechas consultadas"
                     if tipo_objetivo_norm:
-                        return False, f"Sin registros tipo {tipo_objetivo_norm} en el rango de fechas"
-                    return False, "Sin registros validos para descargar en el rango de fechas"
+                        return False, f"Sin registros tipo {tipo_objetivo_norm} en las fechas consultadas"
+                    return False, "Sin registros ATENDIDA para descargar en las fechas consultadas"
 
                 # Scroll al botón objetivo antes de interactuar (CRÍTICO para listas largas)
                 try:

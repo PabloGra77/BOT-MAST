@@ -1,5 +1,28 @@
 ﻿# Changelog
 
+## [1.0.3] - 2026-06-16
+
+### Correcciones de bugs — lógica NUMERO DE INGRESO
+- **Extracción de ingreso ignora la cédula**: `_extraer_numero_ingreso_de_fila`
+  ahora recibe la cédula del paciente y la excluye explícitamente de los
+  candidatos, evitando que se confunda la cédula con el número de ingreso.
+- **Extracción por contexto semántico**: Antes de usar heurística numérica,
+  el extractor busca el número que aparece después de palabras clave como
+  "INGRESO", "NRO. ING", etc. en el texto de la fila.
+- **Exclusión de fechas en formato DDMMYYYY / YYYYMMDD**: Los valores de 8
+  dígitos que son fechas válidas ya no se toman como número de ingreso.
+- **Comparación normalizada de ingresos**: La verificación
+  `ingreso_fila != ingreso_solicitado` ahora elimina ceros a la izquierda en
+  ambos lados antes de comparar, evitando falsos negativos (ej: `"056789" vs "56789"`).
+- **Mensaje de error correcto**: El mensaje cuando no se encuentra el ingreso
+  ya no dice "en el rango de fechas" cuando la estrategia es RECIENTE/ANTIGUA.
+- **`_obtener_numero_ingreso_paciente` — búsqueda case-insensitive**: La
+  función ahora también busca la columna "NUMERO INGRESO" con variantes de
+  mayúsculas, minúsculas, espacios extra y puntos, cubriendo los nombres que
+  Excel puede generar al leer la plantilla.
+
+---
+
 ## [1.0.2] - 2026-06-16
 
 ### Correcciones de bugs
