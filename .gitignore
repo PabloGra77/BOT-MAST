@@ -29,8 +29,11 @@ MANIFEST
 
 # PyInstaller
 *.manifest
+# El spec de build SI se versiona (usado por build.py). NOTA: los comentarios
+# inline (en la misma linea que un patron) NO son validos en .gitignore; el
+# texto se vuelve parte del patron y la excepcion deja de funcionar.
 *.spec
-!bot360.spec          # el spec de build SI se versiona
+!bot.spec
 *.exe
 release/             # carpeta de salida del .exe empaquetado
 BOT360_v*/           # carpetas de release antiguas
