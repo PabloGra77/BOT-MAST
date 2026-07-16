@@ -240,6 +240,7 @@ def _es_resultado_transitorio_hc(info):
         "http 405",
         "no se detectó descarga",
         "no se detecto descarga",
+        "pdf en blanco",
         "driver no operativo",
         "sesion",
         "session",

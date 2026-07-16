@@ -74,7 +74,7 @@ except ImportError:
     load_main_config = _load_config
     save_main_config = _save_config
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 # Repositorio para buscar/descargar nuevas versiones (auto-actualizacion).
 GITHUB_REPO = "PabloGra77/BOT-MAST"
 # Maximo de navegadores/usuarios en paralelo. Cada navegador requiere un
@@ -2324,10 +2324,11 @@ class MainWindow(QMainWindow):
                             QTimer.singleShot(0, lambda: QApplication.instance().quit())
 
                         except Exception as ex:
+                            _msg_ex = str(ex)
                             QTimer.singleShot(0, lambda: (
-                                self.statusBar().showMessage(f"Error al actualizar: {ex}"),
+                                self.statusBar().showMessage(f"Error al actualizar: {_msg_ex}"),
                                 QMessageBox.critical(self, "Error de actualización",
-                                    f"No se pudo completar la actualización:\n{ex}"),
+                                    f"No se pudo completar la actualización:\n{_msg_ex}"),
                             ))
 
                     threading.Thread(target=download_and_replace, daemon=True).start()
@@ -2335,8 +2336,9 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, ask)
 
             except Exception as ex:
+                _msg_ex_verif = str(ex)
                 QTimer.singleShot(0, lambda: self.statusBar().showMessage(
-                    f"Error al verificar: {ex}"))
+                    f"Error al verificar: {_msg_ex_verif}"))
 
         threading.Thread(target=do_check, daemon=True).start()
 

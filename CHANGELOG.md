@@ -1,5 +1,36 @@
 ﻿# Changelog
 
+## [1.0.4] - 2026-07-16
+
+### Corrección crítica — soportes (PDF) en blanco
+- **Causa raíz encontrada**: `_mover_a_subcarpeta` sí detectaba PDFs en blanco
+  (peso insuficiente o sin texto extraíble vía `_validar_pdf_no_vacio`), pero
+  la validación estaba marcada explícitamente como "informativa, NO
+  bloqueante": solo se registraba una advertencia en el log y el PDF en
+  blanco se renombraba y entregaba igual como si fuera un soporte válido.
+  Esto afectaba a las descargas que llegaban por el flujo de descarga
+  automática del navegador (a diferencia del flujo de descarga HTTP directa,
+  que ya rechazaba y reintentaba PDFs en blanco desde la v1.0.1/1.0.2).
+- **Cuarentena en vez de entrega silenciosa**: Ahora, cuando el PDF está en
+  blanco/corrupto, se aísla en una subcarpeta `_REVISAR_BLANCO` dentro de la
+  carpeta del servicio (nunca se sobreescribe ni se mezcla con soportes
+  válidos) y `descargar_historia_clinica` devuelve un fallo explícito en vez
+  de reportar éxito.
+- **Reintento automático con sesión fresca**: `_es_resultado_transitorio_hc`
+  (en `runner.py`) ahora reconoce "pdf en blanco" como resultado transitorio,
+  por lo que el bot reintenta automáticamente la descarga (rotando
+  credencial/navegador) en vez de dejar pasar el PDF en blanco o marcar la
+  fila como fallo definitivo sin reintentar.
+- La validación de servicio/fecha (que sí puede tener falsos positivos) se
+  mantiene informativa y no bloqueante, tal como se definió previamente.
+
+### Corrección de bug — NameError en verificación de actualizaciones
+- `desktop_app.py`: las variables `except Exception as ex` se referenciaban
+  dentro de un `lambda` diferido con `QTimer.singleShot`. Python borra esa
+  variable al salir del bloque `except`, así que al ejecutarse el lambda
+  ocurría un `NameError` y el mensaje de error real nunca se mostraba. Ahora
+  el mensaje se captura en una variable normal antes de programar el lambda.
+
 ## [1.0.3] - 2026-06-16
 
 ### Correcciones de bugs — lógica NUMERO DE INGRESO

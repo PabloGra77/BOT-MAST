@@ -1819,29 +1819,18 @@ class Bot:
         Downloads/HC_MASIVA_xxx/<SERVICIO>/<CC_SIGLA[_FACTURA]>.pdf
 
         Antes de mover, valida que el PDF:
-          - No esté vacío (peso + texto)
-          - Mencione el servicio esperado
-          - Su fecha esté en el rango pedido
-        Si falla la validación, elimina el PDF y devuelve None.
+          - No esté vacío (peso + texto) -> BLOQUEANTE: si está en blanco/corrupto
+            se pone en cuarentena (subcarpeta _REVISAR_BLANCO) en vez de
+            entregarse como si fuera un soporte válido.
+          - Mencione el servicio esperado / fecha en rango -> informativo, no
+            bloqueante (se conserva en la carpeta del servicio igual).
+
+        Devuelve (ruta_final, es_valido). es_valido es False únicamente cuando
+        el PDF estaba en blanco/corrupto y terminó en cuarentena.
         """
         try:
             if not os.path.exists(ruta_archivo):
-                return ruta_archivo
-
-            # --- VALIDACION POST-DESCARGA (informativa, NO bloqueante) ---
-            # El usuario quiere que TODO PDF descargado quede en la carpeta del
-            # servicio. Si la validacion falla solo se loggea como advertencia.
-            try:
-                ok, motivo = self.validar_pdf_descargado(
-                    ruta_archivo,
-                    servicio_esperado=servicio,
-                    fecha_inicio=fecha_inicio,
-                    fecha_fin=fecha_fin,
-                )
-                if not ok:
-                    self.log(f"[VALIDACION] PDF dudoso para CC={cedula}: {motivo} (se conserva en carpeta del servicio)")
-            except Exception as e:
-                self.log(f"[WARN] Error en validacion previa de PDF: {e} - se continua con el movimiento")
+                return ruta_archivo, True
 
             cc = str(cedula).strip()
             cod_servicio = self._codigo_servicio_por_contexto(servicio, tipo_atencion)
@@ -1866,6 +1855,44 @@ class Bot:
                 nombre_archivo = f"{cc}_{cod_servicio}_{ingreso}.pdf".upper()
             else:
                 nombre_archivo = f"{cc}_{cod_servicio}.pdf".upper()
+
+            # --- VALIDACION DE CONTENIDO EN BLANCO (BLOQUEANTE) ---
+            # Un PDF en blanco/corrupto NUNCA se entrega como soporte valido:
+            # se aisla en cuarentena para que no se confunda con una descarga
+            # exitosa, y el llamador puede tratarlo como fallo y reintentar.
+            try:
+                ok_blanco, motivo_blanco = self._validar_pdf_no_vacio(ruta_archivo)
+            except Exception as e:
+                ok_blanco, motivo_blanco = True, f"error validando: {e}"
+
+            if not ok_blanco:
+                carpeta_cuarentena = os.path.join(carpeta_destino, "_REVISAR_BLANCO")
+                os.makedirs(carpeta_cuarentena, exist_ok=True)
+                ruta_cuarentena = self._ruta_unica(carpeta_cuarentena, nombre_archivo)
+                try:
+                    shutil.move(ruta_archivo, ruta_cuarentena)
+                except Exception as e:
+                    self.log(f"[WARN] No se pudo mover PDF en blanco a cuarentena: {e}")
+                    ruta_cuarentena = ruta_archivo
+                self.log(f"[ERROR] PDF en blanco/corrupto para CC={cedula}: {motivo_blanco}. "
+                         f"Aislado en: {ruta_cuarentena}")
+                return ruta_cuarentena, False
+
+            # --- VALIDACION DE SERVICIO/FECHA (informativa, NO bloqueante) ---
+            # El usuario quiere que TODO PDF con contenido quede en la carpeta del
+            # servicio aunque el servicio/fecha no coincidan exactamente.
+            try:
+                ok, motivo = self.validar_pdf_descargado(
+                    ruta_archivo,
+                    servicio_esperado=servicio,
+                    fecha_inicio=fecha_inicio,
+                    fecha_fin=fecha_fin,
+                )
+                if not ok:
+                    self.log(f"[VALIDACION] PDF dudoso para CC={cedula}: {motivo} (se conserva en carpeta del servicio)")
+            except Exception as e:
+                self.log(f"[WARN] Error en validacion previa de PDF: {e} - se continua con el movimiento")
+
             ruta_canonica = os.path.join(carpeta_destino, nombre_archivo)
 
             # Evitar duplicados o, si el flujo lo solicita, generar nombre unico.
@@ -1879,7 +1906,7 @@ class Bot:
                         self.log(f"[INFO] Duplicado omitido (ya existe): {ruta_canonica}")
                     except Exception:
                         self.log(f"[INFO] Duplicado detectado (no se pudo borrar temporal): {ruta_archivo}")
-                    return ruta_canonica
+                    return ruta_canonica, True
 
             nueva_ruta = ruta_canonica
 
@@ -1888,10 +1915,10 @@ class Bot:
             self.log(f"[EXITO] Archivo organizado en: {nueva_ruta}")
             # Contabilizar y reiniciar navegador cada N descargas para evitar caducidad
             self._registrar_descarga_y_chequear_reinicio()
-            return nueva_ruta
+            return nueva_ruta, True
         except Exception as e:
             self.log(f"[WARN] No se pudo mover el archivo a la subcarpeta: {e}")
-            return ruta_archivo
+            return ruta_archivo, True
 
     def _extraer_texto_pdf(self, ruta_pdf, max_paginas=2):
         """Extrae texto en mayúsculas de las primeras N páginas. '' si falla."""
@@ -2901,12 +2928,14 @@ class Bot:
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
+                            _ruta_mov, _es_valido = self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
                             # DEDUP seguro: solo borra patrones genericos del navegador.
                             try:
                                 self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
                             except Exception:
                                 pass
+                            if not _es_valido:
+                                return False, f"PDF en blanco/corrupto para CC={cedula}"
                             return True, tipo_final
                         except Exception as e:
                             self.log(f"[WARN] No se pudo renombrar el archivo: {e}")
@@ -2989,26 +3018,28 @@ class Bot:
                             else:
                                 tipo_final = tipo_detectado_tabla
 
-                            self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
+                            _ruta_mov, _es_valido = self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
                             try:
                                 self._eliminar_pdfs_duplicados_recientes(archivos_antes | {archivo_descargado}, ventana_segundos=15)
                             except Exception:
                                 pass
+                            if not _es_valido:
+                                return False, f"PDF en blanco/corrupto para CC={cedula}"
                             return True, tipo_final
                         except Exception as e:
                             self.log(f"[WARN] No se pudo renombrar el archivo: {e}")
                             if ventana_nueva:
                                 self._cerrar_ventanas_auxiliares(ventanas_antes)
-                            
+
                             # Intentamos retornar éxito aunque falle renombrado, asumiendo que el archivo existe con nombre original
                             # Pero el path ruta_final no existe. Usamos ruta_original.
-                            
+
                             # Si la tabla no clasifica bien (DESCONOCIDO/OTRO), usamos el PDF.
                             if tipo_detectado_tabla in ("DESCONOCIDO", "OTRO"):
                                 tipo_final = self.detectar_tipo_atencion(ruta_original)
                             else:
                                 tipo_final = tipo_detectado_tabla
-                            
+
                             self._mover_a_subcarpeta(ruta_original, cedula, tipo_final, servicio, numero_factura=numero_factura, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, numero_ingreso=numero_ingreso, permitir_duplicado_unico=_modo_rango_fechas)
                             return True, tipo_final
                     else:
