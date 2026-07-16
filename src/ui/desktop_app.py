@@ -44,8 +44,10 @@ try:
     )
     from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QDateTime, QSize
     from PyQt6.QtGui import QFont, QTextCursor
-except ImportError:
-    print("ERROR: PyQt6 no instalado. Ejecuta: pip install PyQt6")
+except ImportError as _e_pyqt:
+    print(f"ERROR: No se pudo cargar PyQt6: {_e_pyqt!r}")
+    import traceback as _tb_pyqt
+    _tb_pyqt.print_exc()
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
