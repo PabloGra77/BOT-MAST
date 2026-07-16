@@ -77,7 +77,7 @@ jobs:
 
     - name: List build artifacts
       run: |
-        ls -la dist/
+        Get-ChildItem dist/
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
