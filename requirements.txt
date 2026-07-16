@@ -15,7 +15,11 @@ requests==2.31.0
 urllib3==2.1.0
 
 # GUI Desktop
-PyQt6==6.6.1
+# NOTA: PyQt6==6.6.1 (version anterior) falla al cargar en Windows actuales con
+# "ImportError: DLL load failed while importing QtCore: No se encontro el
+# proceso especificado" - incompatibilidad binaria con versiones recientes de
+# Windows/VC++ runtime. Verificado: 6.11.0 no tiene ese problema.
+PyQt6==6.11.0
 
 # Monitoreo de recursos del sistema
 psutil==5.9.8
