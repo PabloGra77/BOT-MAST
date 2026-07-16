@@ -1,5 +1,20 @@
 ﻿# Changelog
 
+## [1.0.5] - 2026-07-16
+
+### Corrección crítica — BOT.exe no abría (release v1.0.4 rota)
+- **Causa raíz**: `PyQt6==6.6.1` (versión fijada desde el inicio del
+  proyecto) es incompatible con Windows/VC++ runtime actuales: falla con
+  `ImportError: DLL load failed while importing QtCore: No se encontró el
+  proceso especificado` al arrancar. Instalar el "Visual C++ Redistributable"
+  NO lo soluciona (se descartó como causa). Reproducido de forma idéntica en
+  build local y confirmado por un usuario en su equipo real.
+- **Fix**: `PyQt6` actualizado a `6.11.0` en `requirements.txt` y
+  `config/requirements.txt`. Verificado que el `.exe` arranca correctamente
+  con esta versión, tanto en build local como en una máquina real.
+- La v1.0.4 quedó marcada como rota en GitHub Releases; usar v1.0.5 en su
+  lugar.
+
 ## [1.0.4] - 2026-07-16
 
 ### Corrección crítica — soportes (PDF) en blanco

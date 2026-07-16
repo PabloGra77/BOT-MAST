@@ -2,23 +2,19 @@
 """
 Spec de PyInstaller para BOT (aplicacion de escritorio).
 
-Genera una carpeta (modo "onedir"): dist/BOT/BOT.exe + archivos de soporte.
+Genera UN UNICO ejecutable onefile: dist/BOT.exe
 Punto de entrada: src/ui/desktop_app.py (el propio script inserta src/ y la
 raiz del proyecto en sys.path, por lo que puede ejecutarse de forma directa).
 
 `pathex` incluye src/ para que PyInstaller pueda resolver los paquetes
 propios bot_app.* y agenda_app.* (viven junto a ui/, no en la raiz).
 
-NOTA sobre onedir vs onefile: se uso onefile hasta intentar la v1.0.4, pero
-en maquinas reales (y en este entorno de build) PyQt6 fallaba al cargar
-dentro del .exe empaquetado con "ImportError: DLL load failed while
-importing QtCore: No se encontro el proceso especificado". Este es un
-problema conocido del modo onefile de PyInstaller con Qt: cada arranque
-auto-extrae todo a una carpeta temporal nueva, lo que puede causar
-colisiones/errores de carga de DLLs nativas. El modo onedir (carpeta fija,
-sin auto-extraccion en cada arranque) es el fix recomendado para este
-problema especifico. build.py comprime la carpeta resultante en un .zip
-portable para distribucion.
+NOTA sobre el fallo "ImportError: DLL load failed while importing QtCore":
+la causa real NO era el modo onefile, sino que PyQt6 estaba fijado en la
+version 6.6.1 (requirements.txt), incompatible en Windows actuales.
+Verificado localmente y en maquina real: PyQt6==6.11.0 soluciona el fallo
+tanto en onefile como en onedir. Se vuelve a onefile (un unico .exe, sin
+carpeta visible) por preferencia explicita del usuario.
 """
 from pathlib import Path
 
@@ -68,28 +64,21 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="BOT",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="BOT",
 )

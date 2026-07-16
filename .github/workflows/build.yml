@@ -85,13 +85,13 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: bot-windows
-        path: dist/BOT-v*.zip
+        path: dist/BOT.exe
 
     - name: Create Release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: dist/BOT-v*.zip
+        files: dist/BOT.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

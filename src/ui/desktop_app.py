@@ -76,7 +76,7 @@ except ImportError:
     load_main_config = _load_config
     save_main_config = _save_config
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 # Repositorio para buscar/descargar nuevas versiones (auto-actualizacion).
 GITHUB_REPO = "PabloGra77/BOT-MAST"
 # Maximo de navegadores/usuarios en paralelo. Cada navegador requiere un
@@ -2245,13 +2245,13 @@ class MainWindow(QMainWindow):
                         f"Ya tienes la versión más reciente (v{VERSION})"))
                     return
 
-                # Buscar el asset .zip (build onedir: carpeta BOT/ comprimida).
+                # Buscar el asset .exe directo (onefile build)
                 assets = data.get("assets", [])
-                zip_asset = next(
-                    (a for a in assets if a.get("name", "").lower().endswith(".zip")), None
+                exe_asset = next(
+                    (a for a in assets if a.get("name", "").lower().endswith(".exe")), None
                 )
-                download_url = zip_asset["browser_download_url"] if zip_asset else None
-                total_size   = (zip_asset.get("size") or 0) if zip_asset else 0
+                download_url = exe_asset["browser_download_url"] if exe_asset else None
+                total_size   = (exe_asset.get("size") or 0) if exe_asset else 0
 
                 def ask():
                     self.statusBar().showMessage(f"Nueva versión disponible: v{latest}")
@@ -2259,7 +2259,7 @@ class MainWindow(QMainWindow):
                     if not download_url:
                         QMessageBox.information(self, "Actualización disponible",
                             f"Nueva versión: v{latest}\nActual: v{VERSION}\n\n"
-                            "No se encontró el .zip para descarga directa.\n"
+                            "No se encontró el .exe para descarga directa.\n"
                             f"Descárgala en:\nhttps://github.com/{GITHUB_REPO}/releases")
                         return
 
@@ -2275,22 +2275,20 @@ class MainWindow(QMainWindow):
                         f"Tamaño: {size_mb}\n\n"
                         "¿Actualizar ahora?\n\n"
                         "El programa se cerrará, se actualizará y se reabrirá automáticamente.\n"
-                        "Tu configuración, descargas y logs NO se tocan.",
+                        "Tu configuración (config.json) no se toca.",
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                     if r != QMessageBox.StandardButton.Yes:
                         return
 
                     def download_and_replace():
                         try:
-                            import zipfile
-
-                            # 1. Descargar el .zip nuevo a un archivo temporal.
-                            tmp_fd, tmp_zip_path = tempfile.mkstemp(suffix=".zip", prefix="BOT_new_")
+                            # 1. Descargar nuevo .exe a archivo temporal
+                            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".exe", prefix="BOT_new_")
                             os.close(tmp_fd)
                             received = 0
 
                             with urllib.request.urlopen(download_url, timeout=120) as dl, \
-                                 open(tmp_zip_path, "wb") as f:
+                                 open(tmp_path, "wb") as f:
                                 while True:
                                     chunk = dl.read(65536)
                                     if not chunk:
@@ -2303,41 +2301,24 @@ class MainWindow(QMainWindow):
                                             self.statusBar().showMessage(
                                                 f"Descargando actualización... {p}%"))
 
-                            # 2. Extraer el .zip a una carpeta temporal.
-                            extract_dir = Path(tempfile.mkdtemp(prefix="BOT_upd_"))
-                            with zipfile.ZipFile(tmp_zip_path) as zf:
-                                zf.extractall(extract_dir)
-                            # El .zip contiene una carpeta raiz "BOT/" (ver build.py).
-                            nuevo_build_dir = extract_dir / "BOT"
-                            if not nuevo_build_dir.exists():
-                                candidatos = [p for p in extract_dir.iterdir() if p.is_dir()]
-                                nuevo_build_dir = candidatos[0] if candidatos else extract_dir
-
-                            # 3. Carpeta de instalacion actual = carpeta que contiene BOT.exe.
+                            # 2. Obtener ruta del .exe actual
                             current_exe = Path(sys.executable if getattr(sys, "frozen", False)
                                                else __file__).resolve()
-                            install_dir = current_exe.parent
 
-                            # 4. Script batch: espera el cierre, refleja (robocopy /MIR)
-                            #    la carpeta nueva sobre la instalada SIN tocar config/
-                            #    downloads/logs (datos del usuario), relanza y limpia.
+                            # 3. Crear script batch que espera cierre, reemplaza y relanza
                             bat_fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="bot_upd_")
                             os.close(bat_fd)
                             bat_content = (
                                 "@echo off\n"
-                                "timeout /t 3 /nobreak >nul\n"
-                                f'robocopy "{nuevo_build_dir}" "{install_dir}" /MIR '
-                                '/XD config downloads logs '
-                                '/NFL /NDL /NJH /NJS /R:3 /W:2\n'
+                                "timeout /t 2 /nobreak >nul\n"
+                                f'move /Y "{tmp_path}" "{current_exe}"\n'
                                 f'start "" "{current_exe}"\n'
-                                f'rmdir /s /q "{extract_dir}"\n'
-                                f'del "{tmp_zip_path}"\n'
                                 f'del "%~f0"\n'
                             )
                             with open(bat_path, "w") as bf:
                                 bf.write(bat_content)
 
-                            # 5. Lanzar script y cerrar app.
+                            # 4. Lanzar script y cerrar app
                             subprocess.Popen(
                                 ["cmd", "/c", bat_path],
                                 creationflags=subprocess.CREATE_NO_WINDOW,
