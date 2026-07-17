@@ -81,17 +81,25 @@ jobs:
       run: |
         Get-ChildItem dist/
 
+    - name: Zip executable (fallback para firewalls que bloquean .exe)
+      run: |
+        Compress-Archive -Path dist/BOT.exe -DestinationPath dist/BOT.exe.zip
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: bot-windows
-        path: dist/BOT.exe
+        path: |
+          dist/BOT.exe
+          dist/BOT.exe.zip
 
     - name: Create Release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: dist/BOT.exe
+        files: |
+          dist/BOT.exe
+          dist/BOT.exe.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
